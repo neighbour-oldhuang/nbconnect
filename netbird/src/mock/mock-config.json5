@@ -1,0 +1,5 @@
+{
+  "libnetbird.so": {
+    "source": "src/mock/Libnetbird.mock.ets"
+  }
+}

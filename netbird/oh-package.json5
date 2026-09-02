@@ -1,0 +1,11 @@
+{
+  "name": "netbird",
+  "version": "1.0.0",
+  "description": "Please describe the basic information.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    "libnetbird.so": "file:./src/main/cpp/types/libnetbird"
+  }
+}

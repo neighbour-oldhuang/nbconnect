@@ -1,0 +1,50 @@
+{
+  "module": {
+    "name": "netbird",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "NetbirdAbility",
+    "deviceTypes": [
+      "phone"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "abilities": [
+      {
+        "name": "NetbirdAbility",
+        "srcEntry": "./ets/netbirdability/NetbirdAbility.ets",
+        "description": "$string:NetbirdAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:NetbirdAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "skills": [
+          {
+            "entities": [
+              "entity.system.home"
+            ],
+            "actions": [
+              "ohos.want.action.home"
+            ]
+          }
+        ]
+      }
+    ],
+    "extensionAbilities": [
+      {
+        "name": "NetbirdBackupAbility",
+        "srcEntry": "./ets/netbirdbackupability/NetbirdBackupAbility.ets",
+        "type": "backup",
+        "exported": false,
+        "metadata": [
+          {
+            "name": "ohos.extension.backup",
+            "resource": "$profile:backup_config"
+          }
+        ],
+      }
+    ]
+  }
+}

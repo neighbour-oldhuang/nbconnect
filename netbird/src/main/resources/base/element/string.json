@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "NetbirdAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "NetbirdAbility_label",
+      "value": "label"
+    }
+  ]
+}
