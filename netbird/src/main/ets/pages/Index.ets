@@ -58,6 +58,12 @@ const DOMAIN = 0x4E42;
 const DEFAULT_CONFIGURATION_NAME = '我的VPN';
 // 左滑操作按钮的单个宽度
 const PROFILE_ACTION_WIDTH = 72;
+// 系统的边缘返回手势占用屏幕两侧一条窄带，页面内手势的起点要避开它
+const EDGE_GESTURE_SAFE_INSET = 120;
+// 悬浮齿轮的默认位置（标题与配置卡片之间的空隙）与可拖动范围
+const GEAR_DEFAULT_OFFSET_Y = 54;
+const GEAR_MIN_OFFSET_Y = 44;
+const GEAR_MAX_OFFSET_Y = 720;
 const VPN_WANT: Want = {
   bundleName: 'org.huangedehw.nbconnect',
   abilityName: 'NetbirdVpnExtensionAbility'
@@ -229,6 +235,8 @@ struct Index {
   @State editingProfile: string = '';
   // 左滑露出操作按钮的配置项（同一时刻只允许一个展开）
   @State swipedProfile: string = '';
+  // 悬浮齿轮的垂直位置，可由用户上下拖动
+  @State gearOffsetY: number = GEAR_DEFAULT_OFFSET_Y;
   @State isAddingConfiguration: boolean = false;
   @State vpnPrepared: boolean = false;
   @State extensionStarted: boolean = false;
@@ -626,6 +634,16 @@ struct Index {
   @State ssoFlow: string = '';
   @State ssoMessage: string = '';
   private ssoPollTimer: number = -1;
+  private drawerGestureStartX: number = -1;
+  private gearDragBaseY: number = GEAR_DEFAULT_OFFSET_Y;
+
+  // 拖动范围留出标题与底部按钮的空间，避免齿轮被拖到看不见或压住主按钮。
+  private clampGearOffsetY(value: number): number {
+    if (value < GEAR_MIN_OFFSET_Y) {
+      return GEAR_MIN_OFFSET_Y;
+    }
+    return value > GEAR_MAX_OFFSET_Y ? GEAR_MAX_OFFSET_Y : value;
+  }
 
   // 设置改动立即落盘，并同步交给本进程的 Core（SSO 登录在 UI 进程完成，也要按设置建 config）。
   private persistSettings(): void {
@@ -640,6 +658,19 @@ struct Index {
       this.settingsMessage = `保存失败: ${err.message}`;
       hilog.error(DOMAIN, 'NetBirdSettings', 'SETTINGS_SAVE_FAIL %{public}s', err.message);
     }
+  }
+
+  private openSettingsDrawer(): void {
+    this.settingsMessage = '';
+    this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseOut }, () => {
+      this.settingsActive = true;
+    });
+  }
+
+  private closeSettingsDrawer(): void {
+    this.getUIContext().animateTo({ duration: 200, curve: Curve.EaseIn }, () => {
+      this.settingsActive = false;
+    });
   }
 
   private loadSettings(): void {
@@ -1857,14 +1888,6 @@ struct Index {
               .fontSize(24)
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.nb_text_primary'))
-            Text('设置')
-              .fontSize(13)
-              .fontColor($r('app.color.nb_accent'))
-              .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-              .onClick(() => {
-                this.settingsMessage = '';
-                this.settingsActive = true;
-              })
             Blank()
             Stack({ alignContent: Alignment.Start }) {
               // Slightly taller than the title cap height for a balanced pill, with
@@ -2442,7 +2465,47 @@ struct Index {
         .height('100%')
         .backgroundColor($r('sys.color.background_primary'))
       }
-      // 全局设置覆盖层：所有服务器配置共用一套；改动立即保存，连接相关项重连后生效。
+      // 悬浮齿轮：默认停在标题下方，可上下拖动到顺手的位置；做成右半圆胶囊贴着边缘，
+      // 暗示可以从这侧拉出抽屉。
+      if (!this.settingsActive) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.gearshape'))
+            .fontSize(18)
+            .fontColor([$r('app.color.nb_text_secondary')])
+        }
+        .justifyContent(FlexAlign.Center)
+        .width(34)
+        .height(34)
+        .borderRadius({ topLeft: 0, bottomLeft: 0, topRight: 17, bottomRight: 17 })
+        .backgroundColor($r('app.color.nb_card_background'))
+        .border({ width: 1, color: $r('app.color.nb_card_border') })
+        .shadow({ radius: 10, color: '#1A000000', offsetX: 2, offsetY: 2 })
+        .position({ x: 0, y: this.gearOffsetY })
+        .onClick(() => this.openSettingsDrawer())
+        .gesture(
+          PanGesture({ direction: PanDirection.Vertical, distance: 8 })
+            .onActionStart(() => {
+              this.gearDragBaseY = this.gearOffsetY;
+            })
+            .onActionUpdate((event: GestureEvent) => {
+              this.gearOffsetY = this.clampGearOffsetY(this.gearDragBaseY + event.offsetY);
+            })
+            .onActionEnd((event: GestureEvent) => {
+              this.gearOffsetY = this.clampGearOffsetY(this.gearDragBaseY + event.offsetY);
+            })
+        )
+      }
+
+      // 抽屉遮罩：点击空白处收起。
+      if (this.settingsActive) {
+        Column()
+          .width('100%')
+          .height('100%')
+          .backgroundColor('#66000000')
+          .onClick(() => this.closeSettingsDrawer())
+          .transition(TransitionEffect.OPACITY)
+      }
+      // 全局设置抽屉：所有服务器配置共用一套；改动立即保存，连接相关项重连后生效。
       if (this.settingsActive) {
         Column({ space: 0 }) {
           Row({ space: 10 }) {
@@ -2455,7 +2518,7 @@ struct Index {
               .fontSize(15)
               .fontColor($r('app.color.nb_accent'))
               .padding(6)
-              .onClick(() => this.settingsActive = false)
+              .onClick(() => this.closeSettingsDrawer())
           }
           .width('100%')
           .padding({ bottom: 6 })
@@ -2552,13 +2615,46 @@ struct Index {
           .width('100%')
         }
         .padding({ left: 16, right: 16, top: 16 })
-        .width('100%')
+        .width('86%')
         .height('100%')
+        .position({ x: 0, y: 0 })
+        .borderRadius({ topLeft: 0, bottomLeft: 0, topRight: 20, bottomRight: 20 })
         .backgroundColor($r('sys.color.background_primary'))
+        .shadow({ radius: 24, color: '#33000000', offsetX: 6, offsetY: 0 })
+        .transition(TransitionEffect.translate({ x: -420 }))
+        // 抽屉内左滑收起。
+        .gesture(
+          PanGesture({ direction: PanDirection.Horizontal, distance: 24 })
+            .onActionEnd((event: GestureEvent) => {
+              if (event.offsetX < -60) {
+                this.closeSettingsDrawer();
+              }
+            })
+        )
       }
     }
     .height('100%')
     .backgroundColor($r('sys.color.background_primary'))
+    // 页面内右滑拉出设置抽屉。起点必须离左边缘足够远，否则会和系统的边缘返回手势抢；
+    // 配置项是左滑，方向相反，不会互相误触。
+    .gesture(
+      PanGesture({ direction: PanDirection.Horizontal, distance: 24 })
+        .onActionStart((event: GestureEvent) => {
+          // 起点要在手指还在屏幕上时取，onActionEnd 时 fingerList 可能已经空了。
+          const fingers = event.fingerList;
+          this.drawerGestureStartX = fingers.length > 0 ? fingers[0].globalX : -1;
+        })
+        .onActionEnd((event: GestureEvent) => {
+          const startX = this.drawerGestureStartX;
+          this.drawerGestureStartX = -1;
+          if (this.settingsActive || this.swipedProfile.length > 0 || event.offsetX <= 60) {
+            return;
+          }
+          if (startX >= EDGE_GESTURE_SAFE_INSET) {
+            this.openSettingsDrawer();
+          }
+        })
+    )
   }
 
   @Builder
