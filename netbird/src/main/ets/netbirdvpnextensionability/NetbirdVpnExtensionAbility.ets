@@ -35,6 +35,7 @@ import {
   KIND_ERROR,
   KIND_NEEDS_CREDENTIAL,
   KIND_READY,
+  KIND_RECONFIGURED,
   KIND_STATUS_REQUEST,
   KIND_STATUS_RESPONSE,
   KIND_STOPPED,
@@ -746,9 +747,9 @@ export default class NetbirdVpnExtensionAbility extends VpnExtensionAbility {
       'VPN_AUTO_RECONFIGURATION_APPLIED generation=%{public}d configRevision=%{public}d appliedRevision=%{public}d routes=%{public}d',
       applied.reconfigurationGeneration, applied.configRevision, applied.appliedConfigRevision,
       adapter.vpnConfig?.routes?.length ?? 0);
-    // Push the fresh authoritative state so the UI reflects the new routes and DNS
-    // without waiting for its next poll.
-    await this.publishStatusAwaited(KIND_STATUS_RESPONSE, '', netbird.coreStatus());
+    // Tell the host the change is already live so it stops asking for a reconnect,
+    // and let it refresh the routes and DNS it shows without waiting for a poll.
+    await this.publishStatusAwaited(KIND_RECONFIGURED, '', netbird.coreStatus());
   }
 
   // A failed reconfiguration has already rolled the platform back, so the tunnel is

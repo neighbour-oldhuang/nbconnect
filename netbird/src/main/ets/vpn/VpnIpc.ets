@@ -10,6 +10,9 @@ export const KIND_STATUS_RESPONSE: string = 'status-response';
 export const KIND_CONTROL_REQUEST: string = 'control-request';
 export const KIND_CONTROL_RESPONSE: string = 'control-response';
 export const KIND_READY: string = 'ready';
+// A pending server-side change was applied to the running tunnel, so the host can
+// drop the "reconnect to apply" hint and rebase its route comparison.
+export const KIND_RECONFIGURED: string = 'reconfigured';
 // Platform preparation finished, but the active profile has no usable identity
 // yet (no earlier registration and no SSO enrollment), so an explicit connect
 // would be rejected with -409.

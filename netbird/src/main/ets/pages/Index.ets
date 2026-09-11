@@ -34,6 +34,7 @@ import {
   KIND_ERROR,
   KIND_NEEDS_CREDENTIAL,
   KIND_READY,
+  KIND_RECONFIGURED,
   KIND_STATUS_REQUEST,
   KIND_STATUS_RESPONSE,
   KIND_STOPPED,
@@ -109,6 +110,12 @@ interface NetworkMapRuntimeView {
 }
 
 
+interface ResolvedDomainView {
+  domain: string;
+  parent?: string;
+  addresses: string[];
+}
+
 interface CoreDataView {
   initialized: boolean;
   phase: string;
@@ -116,6 +123,7 @@ interface CoreDataView {
   engineRunning: boolean;
   peers: PeerRuntimeView;
   appliedRoutes?: RouteDetailView[];
+  resolvedDomains?: ResolvedDomainView[];
   tunnelAddresses?: string[];
   dnsAddresses?: string[];
   networkMap: NetworkMapRuntimeView;
@@ -186,6 +194,8 @@ struct Index {
   @State peersExpanded: boolean = false;
   @State peerDetails: PeerDetailView[] = [];
   @State appliedRoutes: RouteDetailView[] = [];
+  @State resolvedDomains: ResolvedDomainView[] = [];
+  @State domainsExpanded: boolean = false;
   @State tunnelAddresses: string[] = [];
   @State dnsAddresses: string[] = [];
   @State configRevision: number = 0;
@@ -285,6 +295,15 @@ struct Index {
       this.applyRemoteCoreReport(packet.payload, packet.kind);
       this.explicitConnectionState = 'needs-credential';
       this.applyMissingCredentialGuidance();
+      return;
+    }
+    if (packet.kind === KIND_RECONFIGURED) {
+      // The Extension已把服务端变更应用到运行中的隧道，因此重新取基线，
+      // 否则"重新连接后生效"的提示会一直挂着，即使变更早就生效了。
+      this.applyRemoteCoreReport(packet.payload, packet.kind);
+      this.routeBaseline = this.routeSignature();
+      this.vpnAction = '服务端配置变更已自动生效';
+      hilog.info(DOMAIN, 'NetBirdVpnIpc', 'VPN_IPC_RECONFIGURED_APPLIED');
       return;
     }
     if (packet.kind !== KIND_READY && packet.kind !== KIND_STATUS_RESPONSE && packet.kind !== KIND_ERROR) {
@@ -415,7 +434,9 @@ struct Index {
       this.peerP2PConnected = peers?.p2pConnected ?? 0;
       this.peerRelayedConnected = peers?.relayedConnected ?? 0;
       this.peerDetails = (peers?.details ?? []).filter((item: PeerDetailView) => item.connected);
-      this.appliedRoutes = data?.appliedRoutes ?? [];
+      this.appliedRoutes = (data?.appliedRoutes ?? [])
+        .filter((item: RouteDetailView) => !this.isFakeIPRoute(item.prefix));
+      this.resolvedDomains = data?.resolvedDomains ?? [];
       this.tunnelAddresses = data?.tunnelAddresses ?? [];
       this.dnsAddresses = data?.dnsAddresses ?? [];
       this.configRevision = platform?.configRevision ?? 0;
@@ -997,6 +1018,15 @@ struct Index {
   // Comparing the route set against the one captured at connect time can.
   private routeSignature(): string {
     return this.appliedRoutes.map((item: RouteDetailView) => item.prefix).sort().join(',');
+  }
+
+  // Domain resources are reached through addresses the Core allocates from its
+  // reserved fake IP blocks and translates back internally. They are an
+  // implementation detail: showing them as routes is noise, and counting them as a
+  // configuration change turns every new domain lookup into a false "server config
+  // changed" hint.
+  private isFakeIPRoute(prefix: string): boolean {
+    return prefix.startsWith('240.') || prefix.toLowerCase().startsWith('100:');
   }
 
   private hasPendingConfiguration(): boolean {
@@ -1697,6 +1727,60 @@ struct Index {
               .border({ width: 1, color: $r('app.color.nb_inner_border') })
               .backgroundColor($r('app.color.nb_card_background'))
               .width('100%')
+
+              // 域名资源走内部假地址转发，因此按真实域名和真实地址展示，而不是路由前缀。
+              if (this.resolvedDomains.length > 0) {
+                Column({ space: 10 }) {
+                  Row() {
+                    Text(`域名资源 (${this.resolvedDomains.length})`)
+                      .fontSize(17)
+                      .fontWeight(FontWeight.Bold)
+                    Blank()
+                    Text(this.domainsExpanded ? '收起 ▴' : '展开 ▾')
+                      .fontSize(13)
+                      .fontColor($r('app.color.nb_accent'))
+                  }
+                  .width('100%')
+
+                  if (this.domainsExpanded) {
+                    Column({ space: 10 }) {
+                      Text('域名资源经隧道内 240.0.0.0/8 转发，客户端内部还原为下列真实地址')
+                        .fontSize(11)
+                        .fontColor($r('app.color.nb_text_tertiary'))
+                        .width('100%')
+                      ForEach(this.resolvedDomains, (item: ResolvedDomainView) => {
+                        Row({ space: 10 }) {
+                          Text('')
+                            .width(8)
+                            .height(8)
+                            .borderRadius(4)
+                            .backgroundColor($r('app.color.nb_status_connected'))
+                          Column({ space: 2 }) {
+                            Text(item.domain)
+                              .fontSize(13)
+                              .fontColor($r('app.color.nb_text_primary'))
+                            Text(item.addresses.length > 0 ? item.addresses.join(' · ') : '尚未解析')
+                              .fontSize(11)
+                              .fontColor($r('app.color.nb_text_tertiary'))
+                          }
+                          .layoutWeight(1)
+                          .alignItems(HorizontalAlign.Start)
+                        }
+                        .width('100%')
+                        .alignItems(VerticalAlign.Center)
+                      }, (item: ResolvedDomainView) => `${item.domain}|${item.addresses.join(',')}`)
+                    }
+                    .padding({ top: 8 })
+                    .width('100%')
+                  }
+                }
+                .onClick(() => this.domainsExpanded = !this.domainsExpanded)
+                .padding(14)
+                .borderRadius(14)
+                .border({ width: 1, color: $r('app.color.nb_inner_border') })
+                .backgroundColor($r('app.color.nb_card_background'))
+                .width('100%')
+              }
             }
             .padding(14)
             .borderRadius(20)

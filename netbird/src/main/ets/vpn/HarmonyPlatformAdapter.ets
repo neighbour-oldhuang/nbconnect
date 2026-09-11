@@ -941,15 +941,22 @@ export class HarmonyPlatformAdapter {
   // The Core answers a domain resource with an address from its fake IP block and
   // translates it back through the userspace firewall. Carrying the whole block in
   // the tunnel from the start means a newly resolved domain never changes the system
-  // VPN configuration, so no tunnel rebuild is needed for it.
+  // VPN configuration, so no tunnel rebuild is needed for it. The per-address
+  // prefixes the engine keeps in its desired set are dropped here: the block already
+  // covers them, and writing them into the system configuration would only add
+  // redundant entries that grow with every lookup.
   private withFakeIPBlocks(routes: Array<string>): Array<string> {
-    const merged = routes.slice();
+    const merged = routes.filter((prefix: string) => !this.isInsideFakeIPBlock(prefix));
     for (const block of [FAKE_IP_V4_BLOCK, FAKE_IP_V6_BLOCK]) {
       if (!merged.includes(block)) {
         merged.push(block);
       }
     }
     return merged;
+  }
+
+  private isInsideFakeIPBlock(prefix: string): boolean {
+    return prefix.startsWith('240.') || prefix.toLowerCase().startsWith('100:');
   }
 
   private toLinkAddress(prefix: string): connection.LinkAddress {
