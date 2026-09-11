@@ -35,6 +35,12 @@ interface PhysicalInterfaceSet {
   interfaces: Array<PhysicalInterface>;
 }
 
+// The Core allocates fake addresses for domain resources out of these reserved
+// blocks (240.0.0.0/8 per RFC 1112 and 0100::/64 per RFC 6666). Routing the blocks
+// as a whole keeps per-domain lookups from touching the system VPN configuration.
+const FAKE_IP_V4_BLOCK = '240.0.0.0/8';
+const FAKE_IP_V6_BLOCK = '0100::/64';
+
 export interface HarmonyDesiredSnapshot {
   revision: number;
   interfaceRevision: number;
@@ -184,10 +190,21 @@ export class HarmonyPlatformAdapter {
     const routes = (config.routes ?? [])
       .map((item: connection.RouteInfo) =>
         `${item.destination.address.address}/${item.destination.prefixLength}`)
+      .filter((prefix: string) => !this.isCoveredByFakeIPBlock(prefix))
       .sort()
       .join(',');
     const dns = (config.dnsAddresses ?? []).slice().sort().join(',');
     return `a=${addresses};r=${routes};d=${dns};m=${config.mtu ?? 0}`;
+  }
+
+  // A fake IP route only refines a block the tunnel already carries, so it must not
+  // count as a configuration change: rebuilding the tunnel for every resolved domain
+  // would drop the connection repeatedly for no gain.
+  private isCoveredByFakeIPBlock(prefix: string): boolean {
+    if (prefix === FAKE_IP_V4_BLOCK || prefix === FAKE_IP_V6_BLOCK) {
+      return false;
+    }
+    return prefix.startsWith('240.') || prefix.toLowerCase().startsWith('100:');
   }
 
   getRuntimeSummary(): HarmonyPlatformSummary {
@@ -685,8 +702,12 @@ export class HarmonyPlatformAdapter {
       mtu: 1280
     };
     const model = this.buildVpnConfig(synthetic);
-    if (model.addresses.length !== 2 || model.routes?.length !== 2 || model.mtu !== 1280 ||
-      model.isIPv4Accepted !== true || model.isIPv6Accepted !== true) {
+    // Two snapshot routes plus the two fake IP blocks the tunnel always carries.
+    const expectedRoutes = synthetic.routes.length + 2;
+    if (model.addresses.length !== 2 || model.routes?.length !== expectedRoutes || model.mtu !== 1280 ||
+      model.isIPv4Accepted !== true || model.isIPv6Accepted !== true ||
+      !model.routes.some((route: connection.RouteInfo) =>
+        route.destination.address.address === '240.0.0.0' && route.destination.prefixLength === 8)) {
       throw new Error('in-memory VpnConfig validation failed');
     }
     const debugModel = this.buildDebugVpnConfig(model, 'org.huangedehw.nbconnect');
@@ -900,7 +921,8 @@ export class HarmonyPlatformAdapter {
       throw new Error('platform snapshot is not ready for VpnConfig construction');
     }
     const addresses = snapshot.addresses.map((prefix: string) => this.toLinkAddress(prefix));
-    const routes = snapshot.routes.map((prefix: string) => this.toRoute(prefix));
+    const routePrefixes = this.withFakeIPBlocks(snapshot.routes);
+    const routes = routePrefixes.map((prefix: string) => this.toRoute(prefix));
     const ipv4 = snapshot.addresses.some((prefix: string) => prefix.indexOf(':') < 0);
     const ipv6 = snapshot.addresses.some((prefix: string) => prefix.indexOf(':') >= 0);
     return {
@@ -914,6 +936,20 @@ export class HarmonyPlatformAdapter {
       isInternal: false,
       isBlocking: false
     };
+  }
+
+  // The Core answers a domain resource with an address from its fake IP block and
+  // translates it back through the userspace firewall. Carrying the whole block in
+  // the tunnel from the start means a newly resolved domain never changes the system
+  // VPN configuration, so no tunnel rebuild is needed for it.
+  private withFakeIPBlocks(routes: Array<string>): Array<string> {
+    const merged = routes.slice();
+    for (const block of [FAKE_IP_V4_BLOCK, FAKE_IP_V6_BLOCK]) {
+      if (!merged.includes(block)) {
+        merged.push(block);
+      }
+    }
+    return merged;
   }
 
   private toLinkAddress(prefix: string): connection.LinkAddress {

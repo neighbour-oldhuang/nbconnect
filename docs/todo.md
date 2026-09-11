@@ -1,4 +1,4 @@
-# NetBird HarmonyOS 当前状态与 TODO
+﻿# NetBird HarmonyOS 当前状态与 TODO
 
 > 最后更新：2026-09-09
 > 开发环境：仅 Windows；项目、Go、DevEco Studio、OHOS NDK 和设备调试均在 Windows 侧完成。
@@ -333,11 +333,21 @@ Harmony build 继续必须带 `-tags harmony`。基础 `github.com/cilium/ebpf` 
 - 连接租约：创建系统隧道前等待 desired 配置稳定（500ms 静默窗）再取租约；租约仍被推进时 UI 自动重启重连一次。
 - 自动重配：连接期间检测到 `reconfigurationState=pending` 且隧道配置（地址/路由/DNS/MTU）真实变化时，自动执行 generation-safe 重配，约 2.5 秒内把管理端新增/删除的资源装进系统 VPN，无需用户重连；两次重配最少间隔 10 秒、每次连接最多 3 次，失败则回退为自动重连一次。
 - 管理端 nameserver group 生效：真机抓包确认整机 DNS 经隧道转发至 CoreDNS（`100.107.x > 192.168.6.240:53`）；客户端状态页 DNS 字段显示的是内置解析器地址（`100.107.255.254`），管理端 IP 作为其上游，按设计不出现在该字段。
+- 域名资源（domain resource）可用，且解析不再重建隧道：
+  - `client/harmony/netbinding/bind_vpn_harmony.go` 新增 `BindSocketToVPN`/`BindControl`，用
+    `OH_NetConn_GetAllNets` + `OH_NetConn_GetNetCapabilities` 找到 `NETCONN_BEARER_VPN` 网络后
+    `OH_NetConn_BindSocket` 绑定单个 socket；`upstream_client_harmony.go` 让 DNS client 走该 dialer，
+    于是 DNS 拦截器能到达 routing peer 的 forwarder（进程级 `protectProcessNet()` 保持不变）。
+  - `dnsinterceptor.internalDnatFw()` 与 `routemanager` 的 fake IP 开关对 harmony 放开，
+    域名资源改用 `240.0.0.0/8` 假地址 + `uspfilter` 用户态 DNAT。
+  - ArkTS 侧 `buildVpnConfig` 预置 `240.0.0.0/8` 与 `0100::/64`，`desiredConfigSignature()` 忽略落在
+    假地址块内的具体前缀，因此新解析一个域名不再算配置变化。
+  - 真机证据：向内置解析器查询 `jms.jushuitan.com` 得 `rcode=0 answers=2 tail=240.0.0.2`（此前超时/SERVFAIL），
+    `http://jms.jushuitan.com` 探测返回 `code=307`（此前 15 秒超时），全过程只有
+    `VPN_AUTO_RECONFIGURATION_WATCH_STARTED`、无 `START`/`APPLIED`，隧道未重建，`tunRead/tunWrite` 持续增长。
 
 ### 已知缺陷
-- **域名资源（domain resource）不可用**：`dnsinterceptor` 需向 routing peer 的 DNS forwarder（`<peer>:5353`）转发查询，但该查询用的是 `upstream_general.go` 中无绑定的普通 UDP client；VPN 进程调用过 `protectProcessNet()`，进程内 socket 被钉在物理网络，到不了隧道地址，查询 6 秒超时后回 SERVFAIL。对照实验：同一查询从 UI 进程 29ms 成功、从 VPN 扩展进程超时，从 tc-sh `dig @<peer> -p 5353` 8ms 成功。因此解析失败 → 动态 /32 永不生成 → 该 routing peer 的路由永不出现，相关站点在连接 VPN 后打不开。修法：为 harmony 增加等价于 `upstream_ios.go` 的绑定实现（源地址绑隧道 IP + `OH_NetConn_BindSocket` 绑到 VPN 网络）。
-- **fake IP + 用户态 DNAT 未启用**：`internalDnatFw()` 有 `runtime.GOOS != "android"` 硬判断，harmony（`GOOS=linux`）被挡住，域名资源只能按真实 IP 逐条加 /32。由于鸿蒙系统 VPN 配置不能原地更新，每条新 /32 都要销毁重建隧道（约 2.5 秒中断），短时间访问多个域名会连续重建并吃满重配上限。修法：放开该判断走 `240.0.0.0/8` 假地址段（`uspfilter` 已实现 `AddInternalDNATMapping`），ArkTS 侧预置该段聚合路由并在重建判定中做覆盖归并。
-- Networks 的域名资源在服务端被硬编码 `KeepRoute: true`（`networks/resources/types/resource.go`），动态 /32 只增不减，加剧上一条。
+- Networks 的域名资源在服务端被硬编码 `KeepRoute: true`（`networks/resources/types/resource.go`），动态前缀只增不减；改用 fake IP 后不再引起隧道重建，但假地址分配同样只增，长时间运行需要观察 `240.0.0.0/8` 的占用。
 - search domains 永远落后一轮：引擎在隧道建立后才发布域名资源的 match domains，因此 `configRevision` 稳定高于 `appliedConfigRevision`（观测为 9 vs 6）。已在重建判定中排除 search domains，避免永不收敛的重建循环；代价是该字段不进系统 VPN 配置。
 - Go 侧日志（logrus）既未落 `netbird.log` 也未接入 hilog，DNS/路由层问题只能靠对照实验和服务端抓包定位。
 - 临时（ephemeral）setup key 注册的 peer 离线约 10 分钟后被服务端回收，重连必须重新导入 key；长期联调建议使用非 ephemeral key。
