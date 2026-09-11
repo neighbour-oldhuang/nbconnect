@@ -3,6 +3,106 @@
     {
       "name": "start_window_background",
       "value": "#FFFFFF"
+    },
+    {
+      "name": "nb_page_background",
+      "value": "#F4F8FC"
+    },
+    {
+      "name": "nb_card_background",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "nb_card_border",
+      "value": "#C9CBD0"
+    },
+    {
+      "name": "nb_group_background",
+      "value": "#F9FBFD"
+    },
+    {
+      "name": "nb_inner_border",
+      "value": "#E3E6EA"
+    },
+    {
+      "name": "nb_input_background",
+      "value": "#E9EDF1"
+    },
+    {
+      "name": "nb_subtle_background",
+      "value": "#F0F2F5"
+    },
+    {
+      "name": "nb_text_primary",
+      "value": "#202124"
+    },
+    {
+      "name": "nb_text_secondary",
+      "value": "#5F6368"
+    },
+    {
+      "name": "nb_text_tertiary",
+      "value": "#8A8F98"
+    },
+    {
+      "name": "nb_text_hint",
+      "value": "#9AA0A6"
+    },
+    {
+      "name": "nb_accent",
+      "value": "#1677F2"
+    },
+    {
+      "name": "nb_accent_soft",
+      "value": "#E8F1FE"
+    },
+    {
+      "name": "nb_connect_button",
+      "value": "#1976D2"
+    },
+    {
+      "name": "nb_disconnect_button",
+      "value": "#FF4B28"
+    },
+    {
+      "name": "nb_status_connected",
+      "value": "#46C760"
+    },
+    {
+      "name": "nb_status_progress",
+      "value": "#2F80ED"
+    },
+    {
+      "name": "nb_status_idle",
+      "value": "#C8C9CC"
+    },
+    {
+      "name": "nb_status_failed",
+      "value": "#E05252"
+    },
+    {
+      "name": "nb_error_text",
+      "value": "#B3261E"
+    },
+    {
+      "name": "nb_relay_text",
+      "value": "#E08A00"
+    },
+    {
+      "name": "nb_relay_soft",
+      "value": "#FCF2E0"
+    },
+    {
+      "name": "nb_neutral_soft",
+      "value": "#F1F3F5"
+    },
+    {
+      "name": "nb_button_neutral",
+      "value": "#E8EAED"
+    },
+    {
+      "name": "nb_on_accent",
+      "value": "#FFFFFF"
     }
   ]
 }

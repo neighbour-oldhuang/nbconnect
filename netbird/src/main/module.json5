@@ -17,7 +17,7 @@
         "description": "$string:NetbirdAbility_desc",
         "icon": "$media:layered_image",
         "label": "$string:NetbirdAbility_label",
-        "startWindowIcon": "$media:startIcon",
+        "startWindowIcon": "$media:nbconnect",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
         "skills": [
@@ -32,7 +32,21 @@
         ]
       }
     ],
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.GET_NETWORK_INFO"
+      },
+      {
+        "name": "ohos.permission.INTERNET"
+      }
+    ],
     "extensionAbilities": [
+      {
+        "name": "NetbirdVpnExtensionAbility",
+        "srcEntry": "./ets/netbirdvpnextensionability/NetbirdVpnExtensionAbility.ets",
+        "type": "vpn",
+        "exported": false
+      },
       {
         "name": "NetbirdBackupAbility",
         "srcEntry": "./ets/netbirdbackupability/NetbirdBackupAbility.ets",
@@ -43,7 +57,7 @@
             "name": "ohos.extension.backup",
             "resource": "$profile:backup_config"
           }
-        ],
+        ]
       }
     ]
   }

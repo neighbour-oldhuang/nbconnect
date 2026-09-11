@@ -10,3 +10,11 @@
 /.clang-tidy
 **/.test
 /.appanalyzer
+# 本地验证产物与大体积二进制（libnbharmony.a 约 113MB，按需重新构建）
+/verify
+/.kiro
+**/.hvigor
+*.a
+*.so
+# 含明文凭据，禁止入库
+/docs/connectAccount.md

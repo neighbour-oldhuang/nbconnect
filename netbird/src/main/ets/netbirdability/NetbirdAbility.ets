@@ -3,6 +3,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 
 const DOMAIN = 0x0000;
+const DEBUG_KEEP_SCREEN_ON = true;
 
 export default class NetbirdAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -21,6 +22,14 @@ export default class NetbirdAbility extends UIAbility {
   onWindowStageCreate(windowStage: window.WindowStage): void {
     // Main window is created, set main page for this ability
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
+
+    if (DEBUG_KEEP_SCREEN_ON) {
+      windowStage.getMainWindowSync().setWindowKeepScreenOn(true).then(() => {
+        hilog.info(DOMAIN, 'testTag', 'DEBUG_KEEP_SCREEN_ON_ENABLED');
+      }).catch((error: Error) => {
+        hilog.error(DOMAIN, 'testTag', 'DEBUG_KEEP_SCREEN_ON_FAIL %{public}s', error.message);
+      });
+    }
 
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
