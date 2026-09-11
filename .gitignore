@@ -16,6 +16,9 @@
 **/.hvigor
 *.a
 *.so
+# tools/build.ps1 生成的编译 wrapper（内含本机 SDK 绝对路径）
+/tools/bin
+/tools/ohos-cc.bat
 # 含明文凭据，禁止入库
 /docs/connectAccount.md
 # 签名证书与密钥库

@@ -2,15 +2,15 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "module description"
+      "value": "NBConnect VPN 模块"
     },
     {
       "name": "NetbirdAbility_desc",
-      "value": "description"
+      "value": "基于 NetBird 的点对点 VPN 客户端"
     },
     {
       "name": "NetbirdAbility_label",
-      "value": "label"
+      "value": "NBConnect"
     }
   ]
 }

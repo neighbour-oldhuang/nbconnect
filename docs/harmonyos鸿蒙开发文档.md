@@ -323,39 +323,91 @@ coreTunSelfTest(): string
 coreSelfTest(): string
 ```
 
-## 6. Windows Go 构建
+## 6. 从零构建
 
-在 `D:\Code\netbird` 执行：
+### 6.1 仓库关系
+
+本仓库（`nbconnect`）是 HarmonyOS 宿主：ArkTS UI、VPN Extension、N-API 桥接。
+NetBird Go Core 在**另一个仓库** `netbird` 里（`client/harmony` 及按 `harmony`
+build tag 分派的平台实现），交叉编译成静态库 `libnbharmony.a` 后由本仓库的 CMake
+链接进 `libnetbird.so`。
+
+`libnbharmony.a` 约 113MB，超过 GitHub 单文件上限，因此 `.gitignore` 排除了 `*.a`
+（只有 3.7KB 的 `libnbharmony.h` 入库）。**新机器 clone 后不能直接构建**，必须先生成
+一次静态库。
+
+### 6.2 一键脚本（推荐）
+
+```powershell
+.\tools\build.ps1              # Go 交叉编译 → 拷贝 .a/.h → 打签名 HAP
+.\tools\build.ps1 -Install     # 再安装到已连接设备并启动
+.\tools\build.ps1 -SkipGo      # 只重打 HAP（改 ArkTS / C++ 时用）
+.\tools\build.ps1 -SkipHap     # 只出 .a（改 Go 时先验证编译）
+```
+
+默认假设 `netbird` 仓库与本仓库同级、DevEco Studio 在 `D:\Program Files\DevEco Studio`，
+可用环境变量覆盖：
+
+```powershell
+$env:NBCONNECT_NETBIRD_DIR = "D:\Code\netbird"
+$env:NBCONNECT_DEVECO_DIR  = "D:\Program Files\DevEco Studio"
+```
+
+脚本会自动生成两个 wrapper（都已被 gitignore）：`tools/ohos-cc.bat` 与 `tools/bin/ar.bat`，
+原因见 6.4。
+
+### 6.3 手工命令（等价于脚本做的事）
+
+在 `netbird` 仓库根目录：
 
 ```powershell
 $env:CGO_ENABLED = "1"
 $env:GOOS = "linux"
 $env:GOARCH = "arm64"
-$env:CC = "D:\Code\nbconnect\verify\ohos-cc.bat"
-$env:PATH = "D:\Code\nbconnect\verify\bin;$env:PATH"
+$env:CC = "D:\Code\nbconnect\tools\ohos-cc.bat"
+$env:PATH = "D:\Code\nbconnect\tools\bin;$env:PATH"
 
 go build -tags harmony -buildmode=c-archive `
-  -o D:\Code\nbconnect\verify\libnbharmony.a `
+  -o D:\Code\nbconnect\netbird\src\main\cpp\libnbharmony.a `
   .\client\harmony\
 ```
 
-`-tags harmony` 为强制参数。当前 archive：
+`-tags harmony` 是强制参数：iface、dns、routemanager、grpc、peer/ice 等平台实现全按
+该 build tag 分派，漏掉会编到 Linux 桌面实现上。
 
-```text
-libnbharmony.a  113,198,882 bytes
-libnbharmony.h         3,271 bytes
-```
-
-复制到 N-API 模块：
+在 `nbconnect` 仓库根目录打 HAP：
 
 ```powershell
-Copy-Item D:\Code\nbconnect\verify\libnbharmony.a `
-  D:\Code\nbconnect\netbird\src\main\cpp\libnbharmony.a -Force
-Copy-Item D:\Code\nbconnect\verify\libnbharmony.h `
-  D:\Code\nbconnect\netbird\src\main\cpp\libnbharmony.h -Force
+$env:DEVECO_SDK_HOME = "D:\Program Files\DevEco Studio\sdk"
+$env:JAVA_HOME = "D:\Program Files\DevEco Studio\jbr"
+$env:PATH = "$env:JAVA_HOME\bin;D:\Program Files\DevEco Studio\tools\node;$env:PATH"
+
+& "D:\Program Files\DevEco Studio\tools\hvigor\bin\hvigorw.bat" --no-daemon assembleHap
 ```
 
-依赖检查：
+产物：`netbird/build/default/outputs/default/netbird-default-signed.hap`。
+
+### 6.4 四个必须注意的坑
+
+1. **`ar` 不存在**。`-buildmode=c-archive` 需要 `ar`，Windows 上没有，会报
+   `running ar failed: exec: "ar": executable file not found in %PATH%`。用 NDK 自带的
+   `llvm-ar.exe` 包一个同名 `ar.bat` 放进 PATH 即可。
+2. **`CC` 不能带空格**。cgo 按空格拆分命令，而 DevEco 安装路径含空格，必须用
+   `ohos-cc.bat` 这类 wrapper 固定 clang 路径与 `-target aarch64-linux-ohos --sysroot=... -D__MUSL__`。
+3. **签名要用 DevEco 自带 JBR**。系统 JDK 常缺 `HmacPBESHA256`，`SignHap` 会失败于
+   `Init keystore failed / Integrity check failed`。把 `JAVA_HOME` 指向 `<DevEco>\jbr`。
+4. **不要用 PowerShell 的 `Set-Content -Encoding UTF8` 改 Go 文件**。它会写入 BOM，
+   Go 编译器直接报 `invalid BOM in the middle of the file`。用
+   `[IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding $false))`。
+
+### 6.5 签名配置
+
+根 `build-profile.json5` 的 `signingConfigs` 含本机证书路径与 keyPassword/storePassword，
+**不入库**：仓库内版本保持 `signingConfigs: []`，本机改动用
+`git update-index --skip-worktree build-profile.json5` 排除。新机器需要在 DevEco 里
+重新配置自动签名，然后再执行一次该命令。
+
+### 6.6 依赖检查
 
 ```text
 RLIMIT_PRESENT=False
