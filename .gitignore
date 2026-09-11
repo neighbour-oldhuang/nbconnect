@@ -18,3 +18,20 @@
 *.so
 # 含明文凭据，禁止入库
 /docs/connectAccount.md
+# 签名证书与密钥库
+*.p12
+*.cer
+*.p7b
+*.jks
+*.keystore
+# 其它常见的凭据/密钥文件
+.env
+.env.*
+*_secret*
+*credential*
+*.pem
+*.key
+# 注意：根 build-profile.json5 已被跟踪（仓库内版本的 signingConfigs 为空），
+# 本机新增的签名配置含证书路径与 keyPassword/storePassword，
+# 已用 git update-index --skip-worktree 让本地改动不参与提交。
+# 新机器 clone 后需重新执行：git update-index --skip-worktree build-profile.json5
