@@ -21,7 +21,19 @@ extern const char *_GoStringPtr(_GoString_ s);
 /* Start of preamble from import "C" comments.  */
 
 
+#line 3 "client_settings.go"
+
+#include <stdlib.h>
+
+#line 1 "cgo-generated-wrapper"
+
 #line 3 "nbharmony.go"
+
+#include <stdlib.h>
+
+#line 1 "cgo-generated-wrapper"
+
+#line 3 "sso.go"
 
 #include <stdlib.h>
 
@@ -87,6 +99,7 @@ typedef struct { void *data; GoInt len; GoInt cap; } GoSlice;
 extern "C" {
 #endif
 
+extern char* NbCoreSetClientSettings(char* settingsJSON);
 extern char* NbCoreInit(char* deviceName, char* osVersion, char* configJSON);
 extern char* NbCoreStorePrivateCredentialImport(char* credentialFilePath, char* setupKey, char* managementURL, char* managementDialAddress);
 extern char* NbCoreStartPrivateAuthentication(char* deviceName, char* osVersion, char* configFilePath, char* credentialFilePath);
@@ -111,6 +124,8 @@ extern char* NbCoreTunSelfTest(void);
 extern char* NbCoreResetTunRuntimeStats(void);
 extern char* NbCoreTunRuntimeStats(void);
 extern void NbFreeString(void* value);
+extern char* NbCoreStartSSOLogin(char* deviceName, char* osVersion, char* configFilePath, char* managementURL, int preferDeviceCode);
+extern char* NbCoreCancelSSOLogin(void);
 
 #ifdef __cplusplus
 }

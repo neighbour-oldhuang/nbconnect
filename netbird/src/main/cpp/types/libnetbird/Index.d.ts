@@ -1,8 +1,12 @@
-export const coreInit: (deviceName: string, osVersion: string, configJson: string) => string;
+﻿export const coreInit: (deviceName: string, osVersion: string, configJson: string) => string;
 export const coreStorePrivateCredentialImport: (credentialFilePath: string, setupKey: string,
   managementUrl: string, managementDialAddress: string) => string;
 export const coreStartPrivateAuthentication: (deviceName: string, osVersion: string,
   configFilePath: string, credentialFilePath: string) => string;
+export const coreStartSSOLogin: (deviceName: string, osVersion: string,
+  configFilePath: string, managementUrl: string, preferDeviceCode: boolean) => string;
+export const coreSetClientSettings: (settingsJson: string) => string;
+export const coreCancelSSOLogin: () => string;
 export const coreSetConfig: (configJson: string) => string;
 export const coreSetPlatformState: (tunFd: number, vpnExtensionReady: boolean,
   processProtectReady: boolean, dnsReady: boolean, networkChangeReady: boolean,

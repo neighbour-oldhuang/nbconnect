@@ -21,6 +21,7 @@ import {
   profileLogPath,
   profileStatePath
 } from '../vpn/ProfileStore';
+import { coreSettingsJSON, readClientSettings } from '../vpn/ClientSettings';
 import {
   CONTROL_CONFIGURE,
   CONTROL_CONNECT,
@@ -150,6 +151,8 @@ export default class NetbirdVpnExtensionAbility extends VpnExtensionAbility {
   private appliedConfigSignature: string = '';
   private reconfigurationAttempts: number = 0;
   private lastReconfigurationAt: number = 0;
+  // 由全局设置控制，默认开启；关闭后服务端变更回到"提示重连"的行为。
+  private autoReconfigurationEnabled: boolean = true;
 
   onCreate(want: Want): void {
     hilog.info(DOMAIN, TAG, 'VPN_EXTENSION_CREATE action=%{public}s', want.action ?? 'none');
@@ -218,6 +221,8 @@ export default class NetbirdVpnExtensionAbility extends VpnExtensionAbility {
       return;
     }
     this.ensureCore();
+    // 全局客户端设置要在认证前交给 Core，认证成功时会随 config 一起持久化。
+    this.applyClientSettings();
     const privateConfigured = await this.initializePrivateAuthentication();
     this.privateConfigured = privateConfigured;
     if (this.shutdownRequested) {
@@ -347,6 +352,26 @@ export default class NetbirdVpnExtensionAbility extends VpnExtensionAbility {
     // identity is reported as its own state instead.
     hilog.warn(DOMAIN, TAG, 'VPN_PRIVATE_IDENTITY_MISSING connect-not-available');
     await this.publishStatusAwaited(KIND_NEEDS_CREDENTIAL, '', report);
+  }
+
+  private applyClientSettings(): void {
+    const settings = readClientSettings(this.context.getApplicationContext().filesDir);
+    this.autoReconfigurationEnabled = settings.host.autoApplyServerChanges;
+    try {
+      const report = JSON.parse(netbird.coreSetClientSettings(coreSettingsJSON(settings))) as
+        ControlCoreEnvelope;
+      if (!report.ok) {
+        hilog.warn(DOMAIN, TAG, 'VPN_CLIENT_SETTINGS_REJECTED %{public}s', report.message ?? '');
+        return;
+      }
+      hilog.info(DOMAIN, TAG,
+        'VPN_CLIENT_SETTINGS_APPLIED manageDns=%{public}s acceptRoutes=%{public}s autoApply=%{public}s',
+        settings.core.manageDns ? 'true' : 'false', settings.core.acceptRoutes ? 'true' : 'false',
+        settings.host.autoApplyServerChanges ? 'true' : 'false');
+    } catch (error) {
+      const err = error as Error;
+      hilog.warn(DOMAIN, TAG, 'VPN_CLIENT_SETTINGS_FAIL %{public}s', err.message);
+    }
   }
 
   private async initializePrivateAuthentication(): Promise<boolean> {
@@ -636,7 +661,8 @@ export default class NetbirdVpnExtensionAbility extends VpnExtensionAbility {
   // reconfiguration; rebuilding the system VPN for the new revision is what makes
   // the change effective without asking the user to reconnect.
   private startReconfigurationWatch(): void {
-    if (!PRODUCTION_ENABLE_AUTOMATIC_VPN_RECONFIGURATION || this.reconfigurationWatchTimer >= 0) {
+    if (!PRODUCTION_ENABLE_AUTOMATIC_VPN_RECONFIGURATION || !this.autoReconfigurationEnabled ||
+      this.reconfigurationWatchTimer >= 0) {
       return;
     }
     this.reconfigurationSettleRevision = 0;

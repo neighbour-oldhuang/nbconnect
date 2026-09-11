@@ -917,19 +917,25 @@ export class HarmonyPlatformAdapter {
   }
 
   private buildVpnConfig(snapshot: HarmonyDesiredSnapshot): vpnExtension.VpnConfig {
-    if (!snapshot.configReady || snapshot.mtu <= 0 || snapshot.addresses.length === 0) {
+    // Go 的 nil slice 序列化为 null，例如关闭 DNS 接管后 dnsAddresses 就是 null，
+    // 因此这里逐个兜底，避免整个准备流程因为某个空列表而失败。
+    const snapshotAddresses = snapshot.addresses ?? [];
+    const snapshotRoutes = snapshot.routes ?? [];
+    const snapshotDNS = snapshot.dnsAddresses ?? [];
+    const snapshotDomains = snapshot.searchDomains ?? [];
+    if (!snapshot.configReady || snapshot.mtu <= 0 || snapshotAddresses.length === 0) {
       throw new Error('platform snapshot is not ready for VpnConfig construction');
     }
-    const addresses = snapshot.addresses.map((prefix: string) => this.toLinkAddress(prefix));
-    const routePrefixes = this.withFakeIPBlocks(snapshot.routes);
+    const addresses = snapshotAddresses.map((prefix: string) => this.toLinkAddress(prefix));
+    const routePrefixes = this.withFakeIPBlocks(snapshotRoutes);
     const routes = routePrefixes.map((prefix: string) => this.toRoute(prefix));
-    const ipv4 = snapshot.addresses.some((prefix: string) => prefix.indexOf(':') < 0);
-    const ipv6 = snapshot.addresses.some((prefix: string) => prefix.indexOf(':') >= 0);
+    const ipv4 = snapshotAddresses.some((prefix: string) => prefix.indexOf(':') < 0);
+    const ipv6 = snapshotAddresses.some((prefix: string) => prefix.indexOf(':') >= 0);
     return {
       addresses: addresses,
       routes: routes,
-      dnsAddresses: snapshot.dnsAddresses.slice(),
-      searchDomains: snapshot.searchDomains.slice(),
+      dnsAddresses: snapshotDNS.slice(),
+      searchDomains: snapshotDomains.slice(),
       mtu: snapshot.mtu,
       isIPv4Accepted: ipv4,
       isIPv6Accepted: ipv6,

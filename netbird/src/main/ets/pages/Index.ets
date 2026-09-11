@@ -19,6 +19,13 @@ import {
   writeProfileIndex
 } from '../vpn/ProfileStore';
 import {
+  ClientSettings,
+  coreSettingsJSON,
+  defaultClientSettings,
+  readClientSettings,
+  writeClientSettings
+} from '../vpn/ClientSettings';
+import {
   CONTROL_CONFIGURE,
   CONTROL_CONNECT,
   CONTROL_DISCONNECT,
@@ -49,6 +56,8 @@ import {
 
 const DOMAIN = 0x4E42;
 const DEFAULT_CONFIGURATION_NAME = '我的VPN';
+// 左滑操作按钮的单个宽度
+const PROFILE_ACTION_WIDTH = 72;
 const VPN_WANT: Want = {
   bundleName: 'org.huangedehw.nbconnect',
   abilityName: 'NetbirdVpnExtensionAbility'
@@ -60,6 +69,8 @@ interface CoreConfigView {
   wireGuardInterface: string;
   wireGuardPort: number;
   privateKeyConfigured: boolean;
+  disableDns?: boolean;
+  disableClientRoutes?: boolean;
 }
 
 interface PlatformView {
@@ -116,6 +127,31 @@ interface ResolvedDomainView {
   addresses: string[];
 }
 
+interface SSOFlowView {
+  flow: string;
+  verificationUriComplete: string;
+  verificationUri?: string;
+  userCode?: string;
+  expiresIn: number;
+  interval?: number;
+  redirectUrl?: string;
+}
+
+interface SSOEnvelope {
+  ok: boolean;
+  code: number;
+  message?: string;
+  data?: SSOFlowView;
+}
+
+interface AuthenticationView {
+  state: string;
+  running: boolean;
+  configured: boolean;
+  persistent: boolean;
+  lastError?: string;
+}
+
 interface CoreDataView {
   initialized: boolean;
   phase: string;
@@ -126,9 +162,11 @@ interface CoreDataView {
   resolvedDomains?: ResolvedDomainView[];
   tunnelAddresses?: string[];
   dnsAddresses?: string[];
+  preDnsAddress?: string;
   networkMap: NetworkMapRuntimeView;
   platformReady: boolean;
   platform: PlatformView;
+  authentication?: AuthenticationView;
   managementConnected?: boolean;
   managementErrorCode?: string;
   signalConnected?: boolean;
@@ -184,7 +222,13 @@ struct Index {
   @State hasConfiguration: boolean = false;
   @State profiles: VpnProfile[] = [];
   @State activeProfile: string = '';
+  // 全局客户端设置（对所有服务器配置生效）
+  @State settings: ClientSettings = defaultClientSettings();
+  @State settingsActive: boolean = false;
+  @State settingsMessage: string = '';
   @State editingProfile: string = '';
+  // 左滑露出操作按钮的配置项（同一时刻只允许一个展开）
+  @State swipedProfile: string = '';
   @State isAddingConfiguration: boolean = false;
   @State vpnPrepared: boolean = false;
   @State extensionStarted: boolean = false;
@@ -198,6 +242,9 @@ struct Index {
   @State domainsExpanded: boolean = false;
   @State tunnelAddresses: string[] = [];
   @State dnsAddresses: string[] = [];
+  // 由 Core 上报的实际生效状态，用于区分"没接管"和"还没分配"
+  @State dnsManagementDisabled: boolean = false;
+  @State clientRoutesDisabled: boolean = false;
   @State configRevision: number = 0;
   @State appliedConfigRevision: number = 0;
   @State routeBaseline: string = '';
@@ -220,10 +267,12 @@ struct Index {
   aboutToAppear(): void {
     this.initializeLocalCore();
     this.loadProfiles();
+    this.loadSettings();
     this.registerVpnStatusSubscriber().then((): void => {
       // The Extension is started on demand by the connect action. Starting an
       // automatic preparation here races with the explicit connect and wastes a
       // full preparation timeout when it loses that race.
+      this.maybeAutoConnectOnLaunch();
     }).catch((error: Error) => {
       this.vpnAction = `IPC 订阅失败: ${error.message}`;
       hilog.error(DOMAIN, 'NetBirdVpnIpc', 'VPN_IPC_SUBSCRIBE_FAIL %{public}s', error.message);
@@ -294,7 +343,8 @@ struct Index {
       this.stopStatusPolling();
       this.applyRemoteCoreReport(packet.payload, packet.kind);
       this.explicitConnectionState = 'needs-credential';
-      this.applyMissingCredentialGuidance();
+      // 没有可用身份时直接发起交互式登录，失败再回落到 Setup Key 提示。
+      this.startSSOLogin();
       return;
     }
     if (packet.kind === KIND_RECONFIGURED) {
@@ -439,6 +489,8 @@ struct Index {
       this.resolvedDomains = data?.resolvedDomains ?? [];
       this.tunnelAddresses = data?.tunnelAddresses ?? [];
       this.dnsAddresses = data?.dnsAddresses ?? [];
+      this.dnsManagementDisabled = data?.config?.disableDns === true;
+      this.clientRoutesDisabled = data?.config?.disableClientRoutes === true;
       this.configRevision = platform?.configRevision ?? 0;
       this.appliedConfigRevision = platform?.appliedConfigRevision ?? 0;
       if (this.isTunnelConnected() && this.routeBaseline.length === 0 && this.appliedRoutes.length > 0) {
@@ -459,11 +511,16 @@ struct Index {
       this.platformDetails = `远端Core=${data?.clientStatus ?? '-'}, extension=${platform?.vpnExtensionReady ?? false}, ` +
         `processProtect=${platform?.processProtectReady ?? false}, tunFd=${platform?.tunFdReady ?? false}, ` +
         `dns=${platform?.dnsReady ?? false}, networkChange=${platform?.networkChangeReady ?? false}` +
+        `\n接管DNS=${data?.config?.disableDns === true ? 'false' : 'true'}, ` +
+        `接受路由=${data?.config?.disableClientRoutes === true ? 'false' : 'true'}` +
         `\npeers=${peers?.known ?? 0}, connected=${peers?.connected ?? 0}, handshake=${peers?.withHandshake ?? 0}, ` +
         `txActive=${(peers?.bytesTx ?? 0) > 0}, rxActive=${(peers?.bytesRx ?? 0) > 0}` +
         `${missing.length > 0 ? `\n待适配: ${missing}` : ''}` +
         `${platform?.lastError ? `\n错误: ${platform.lastError}` : ''}`;
       if (networkMap !== undefined) {
+        hilog.info(DOMAIN, 'NetBirdVpnIpc', 'VPN_CORE_CONFIG disableDns=%{public}s dnsAddresses=%{public}s preDns=%{public}s',
+          data?.config?.disableDns === true ? 'true' : 'false',
+          (data?.dnsAddresses ?? []).join(','), data?.preDnsAddress ?? '-');
         hilog.info(DOMAIN, 'NetBirdVpnIpc',
           'VPN_NETWORK_MAP_RUNTIME advertisedVersion=%{public}d syncVersion=%{public}d decodedRoutes=%{public}d resources=%{public}d routers=%{public}d policies=%{public}d',
           networkMap.advertisedSyncVersion, networkMap.syncVersion, networkMap.decodedRoutes,
@@ -559,6 +616,216 @@ struct Index {
       } catch (_) {
       }
     }
+  }
+
+  // 交互式登录（SSO）：授权页在应用内的 Web 组件里打开，IdP 重定向到 Core 监听的
+  // 本机回调地址即完成，因此不依赖系统浏览器，也不受后台冻结影响。
+  @State ssoActive: boolean = false;
+  @State ssoAuthUrl: string = '';
+  @State ssoUserCode: string = '';
+  @State ssoFlow: string = '';
+  @State ssoMessage: string = '';
+  private ssoPollTimer: number = -1;
+
+  // 设置改动立即落盘，并同步交给本进程的 Core（SSO 登录在 UI 进程完成，也要按设置建 config）。
+  private persistSettings(): void {
+    try {
+      writeClientSettings(this.filesDir(), this.settings);
+      const report = JSON.parse(netbird.coreSetClientSettings(coreSettingsJSON(this.settings))) as CoreEnvelope;
+      this.settingsMessage = report.ok ? '已保存，重新连接后生效' :
+        `设置被拒绝: ${report.message ?? '未知原因'}`;
+      hilog.info(DOMAIN, 'NetBirdSettings', 'SETTINGS_SAVED ok=%{public}s', report.ok ? 'true' : 'false');
+    } catch (error) {
+      const err = error as Error;
+      this.settingsMessage = `保存失败: ${err.message}`;
+      hilog.error(DOMAIN, 'NetBirdSettings', 'SETTINGS_SAVE_FAIL %{public}s', err.message);
+    }
+  }
+
+  private loadSettings(): void {
+    this.settings = readClientSettings(this.filesDir());
+    try {
+      netbird.coreSetClientSettings(coreSettingsJSON(this.settings));
+    } catch (error) {
+      const err = error as Error;
+      hilog.warn(DOMAIN, 'NetBirdSettings', 'SETTINGS_APPLY_FAIL %{public}s', err.message);
+    }
+  }
+
+  // 数值类设置留空或 0 表示沿用默认，避免用户被迫填一个不知所以的数字。
+  private applyNumericSetting(value: string, apply: (parsed: number) => void): void {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      apply(0);
+      this.persistSettings();
+      return;
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      this.settingsMessage = '请输入非负整数';
+      return;
+    }
+    apply(parsed);
+    this.persistSettings();
+  }
+
+  // 打开应用即自动连接：仅在本地已有身份时执行，否则会在启动瞬间弹出登录页面。
+  private maybeAutoConnectOnLaunch(): void {
+    if (!this.settings.host.autoConnectOnLaunch || this.activeProfile.length === 0) {
+      return;
+    }
+    if (!this.hasStoredIdentity(this.activeProfile)) {
+      hilog.info(DOMAIN, 'NetBirdVpn', 'AUTO_CONNECT_SKIPPED_NO_IDENTITY');
+      return;
+    }
+    hilog.info(DOMAIN, 'NetBirdVpn', 'AUTO_CONNECT_ON_LAUNCH');
+    this.connectWhenReady = true;
+    this.explicitConnectionState = 'preparing';
+    this.vpnAction = '正在自动连接…';
+    this.restartPreparation().catch((error: Error): void => {
+      this.connectWhenReady = false;
+      this.explicitConnectionState = 'failed';
+      this.vpnAction = `自动连接失败: ${error.message}`;
+    });
+  }
+
+  private hasStoredIdentity(id: string): boolean {
+    try {
+      return fileIo.accessSync(profileConfigPath(this.filesDir(), id));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  private buildSSOConfigPath(): string {
+    return profileConfigPath(this.filesDir(), this.activeProfile);
+  }
+
+  // 有 setup key 就用 key，没有就走交互式登录；只有在服务端也不支持交互式登录时才提示需要 key。
+  private startSSOLogin(): void {
+    const management = this.privateManagementUrl.trim();
+    if (management.length === 0) {
+      this.credentialAction = '请填写管理地址';
+      return;
+    }
+    this.vpnAction = '正在准备登录…';
+    try {
+      // 登录方式由全局设置决定：设备码把交互整个交给浏览器（企业 SSO 常要跳到另一个应用
+      // 再跳回来），PKCE 少一步输码但依赖浏览器能回调到本机监听端口。
+      const raw = netbird.coreStartSSOLogin('nbconnect-vpn', 'HarmonyOS',
+        this.buildSSOConfigPath(), management, this.settings.host.preferDeviceCodeLogin);
+      const envelope = JSON.parse(raw) as SSOEnvelope;
+      if (!envelope.ok || envelope.data === undefined ||
+        envelope.data.verificationUriComplete.length === 0) {
+        throw new Error(envelope.message ?? '无法启动登录');
+      }
+      this.ssoFlow = envelope.data.flow;
+      this.ssoAuthUrl = envelope.data.verificationUriComplete;
+      this.ssoUserCode = envelope.data.userCode ?? '';
+      this.ssoMessage = this.ssoUserCode.length > 0
+        ? '已在浏览器中打开登录页，请确认下方验证码并完成登录'
+        : '已在浏览器中打开登录页，请完成登录';
+      this.ssoActive = true;
+      this.explicitConnectionState = 'preparing';
+      this.vpnAction = '等待浏览器中完成登录…';
+      this.openSSOAuthPage();
+      this.startSSOPolling();
+      hilog.info(DOMAIN, 'NetBirdSSO', 'SSO_LOGIN_STARTED flow=%{public}s', this.ssoFlow);
+    } catch (error) {
+      const err = error as Error;
+      this.ssoActive = false;
+      this.explicitConnectionState = 'needs-credential';
+      this.identityRejected = false;
+      this.vpnAction = `登录不可用: ${err.message}，请填写 Setup Key`;
+      this.credentialAction = `登录不可用: ${err.message}`;
+      hilog.error(DOMAIN, 'NetBirdSSO', 'SSO_LOGIN_START_FAIL %{public}s', err.message);
+    }
+  }
+
+  private openSSOAuthPage(): void {
+    if (this.ssoAuthUrl.length === 0) {
+      return;
+    }
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+    const want: Want = {
+      action: 'ohos.want.action.viewData',
+      entities: ['entity.system.browsable'],
+      uri: this.ssoAuthUrl
+    };
+    context.startAbility(want).then((): void => {
+      hilog.info(DOMAIN, 'NetBirdSSO', 'SSO_BROWSER_OPENED');
+    }).catch((error: BusinessError): void => {
+      this.ssoMessage = `无法打开浏览器（${error.code}），请手动打开下方地址完成登录`;
+      hilog.error(DOMAIN, 'NetBirdSSO', 'SSO_BROWSER_OPEN_FAIL code=%{public}d', error.code);
+    });
+  }
+
+  private startSSOPolling(): void {
+    if (this.ssoPollTimer >= 0) {
+      return;
+    }
+    this.ssoPollTimer = setInterval((): void => this.pollSSOState(), 1500);
+  }
+
+  private stopSSOPolling(): void {
+    if (this.ssoPollTimer < 0) {
+      return;
+    }
+    clearInterval(this.ssoPollTimer);
+    this.ssoPollTimer = -1;
+  }
+
+  private pollSSOState(): void {
+    let state = '';
+    let lastError = '';
+    try {
+      const report = JSON.parse(netbird.coreStatus()) as CoreEnvelope;
+      const authentication = report.data?.authentication;
+      state = authentication?.state ?? '';
+      lastError = authentication?.lastError ?? '';
+    } catch (_) {
+      return;
+    }
+    if (state === 'registering') {
+      this.ssoMessage = '登录成功，正在注册设备…';
+      return;
+    }
+    if (state === 'configured') {
+      this.stopSSOPolling();
+      this.ssoActive = false;
+      this.hasConfiguration = true;
+      this.vpnAction = '登录成功，正在建立连接…';
+      this.credentialAction = '已通过交互式登录完成注册';
+      hilog.info(DOMAIN, 'NetBirdSSO', 'SSO_LOGIN_CONFIGURED');
+      this.connectWhenReady = true;
+      this.restartPreparation().catch((error: Error): void => {
+        this.explicitConnectionState = 'failed';
+        this.vpnAction = `连接失败: ${error.message}`;
+      });
+      return;
+    }
+    if (state === 'failed' || state === 'cancelled') {
+      this.stopSSOPolling();
+      this.ssoActive = false;
+      this.explicitConnectionState = state === 'cancelled' ? 'ready' : 'failed';
+      const reason = lastError.length > 0 ? this.shortReason(lastError) : '登录未完成';
+      this.vpnAction = state === 'cancelled' ? '登录已取消' : `登录失败: ${reason}`;
+      this.credentialAction = state === 'cancelled' ? '登录已取消' : `登录失败: ${reason}`;
+      hilog.warn(DOMAIN, 'NetBirdSSO', 'SSO_LOGIN_ENDED state=%{public}s', state);
+    }
+  }
+
+  private cancelSSOLogin(): void {
+    this.stopSSOPolling();
+    this.ssoActive = false;
+    try {
+      netbird.coreCancelSSOLogin();
+    } catch (error) {
+      const err = error as Error;
+      hilog.warn(DOMAIN, 'NetBirdSSO', 'SSO_LOGIN_CANCEL_FAIL %{public}s', err.message);
+    }
+    this.explicitConnectionState = 'ready';
+    this.vpnAction = '登录已取消';
   }
 
   private async runEndToEndProbe(): Promise<void> {
@@ -1052,8 +1319,12 @@ struct Index {
     }, 60);
   }
 
+  // 关掉"接管系统 DNS"时不是"还没分配"，而是按设置根本不去接管，两者要分开表述。
   private dnsAddressLabel(): string {
-    return this.dnsAddresses.length > 0 ? this.dnsAddresses.join(' · ') : '未分配';
+    if (this.dnsAddresses.length > 0) {
+      return this.dnsAddresses.join(' · ');
+    }
+    return this.dnsManagementDisabled ? '未接管（设置已关闭）' : '未分配';
   }
 
   private tunnelAddressLabel(): string {
@@ -1210,10 +1481,9 @@ struct Index {
       await this.saveConfiguration(true);
       return;
     }
-    // The Extension already reported that this profile owns no NetBird identity.
-    // Re-preparing would end in the same rejection, so ask for the key instead.
+    // 该配置没有可用身份：优先尝试交互式登录，只有服务端也不支持时才要求 Setup Key。
     if (this.explicitConnectionState === 'needs-credential') {
-      this.applyMissingCredentialGuidance();
+      this.startSSOLogin();
       return;
     }
     // A connect is only accepted by the Extension once preparation finished and
@@ -1356,20 +1626,112 @@ struct Index {
     }
   }
 
-  // Clears the login credential material of the selected configuration: the peer
-  // registration state and any pending setup-key transfer file. The profile name
-  // and Management URL are kept so only a new setup key is required.
-  private resetCredentialInput(): void {
+  // 重置与删除都会丢弃本地身份且不可撤销，先让用户确认。
+  private confirmResetProfile(item: VpnProfile): void {
+    this.closeProfileActions();
     if (this.isTunnelConnected() || this.isConnectionBusy()) {
-      this.credentialAction = '请先断开连接再重置密钥';
+      this.credentialAction = '请先断开连接再重置';
       return;
     }
-    if (this.activeProfile.length === 0) {
-      this.credentialAction = '请先添加配置';
+    this.getUIContext().showAlertDialog({
+      title: '重置登录状态',
+      message: `将清除「${item.name}」的本地身份（私钥与注册状态），下次连接需要重新认证。配置名称与管理地址会保留。`,
+      autoCancel: true,
+      primaryButton: {
+        value: '取消',
+        action: (): void => {
+        }
+      },
+      secondaryButton: {
+        value: '重置',
+        fontColor: $r('app.color.nb_status_progress'),
+        action: (): void => this.resetProfileIdentity(item.id)
+      }
+    });
+  }
+
+  private confirmDeleteProfile(item: VpnProfile): void {
+    this.closeProfileActions();
+    if (this.isTunnelConnected() || this.isConnectionBusy()) {
+      this.credentialAction = '请先断开连接再删除配置';
       return;
     }
-    const id = this.activeProfile;
+    this.getUIContext().showAlertDialog({
+      title: '删除配置',
+      message: `将删除「${item.name}」及其本地身份文件，此操作不可撤销。服务端上的设备记录需要在管理端自行清理。`,
+      autoCancel: true,
+      primaryButton: {
+        value: '取消',
+        action: (): void => {
+        }
+      },
+      secondaryButton: {
+        value: '删除',
+        fontColor: $r('app.color.nb_status_failed'),
+        action: (): void => this.deleteConfiguration(item.id)
+      }
+    });
+  }
+
+  // 滑开时卡片右侧收掉圆角和描边，与按钮拼成一条连续的胶囊，不再出现圆角撞直角的断裂感。
+  private profileCardRadius(id: string): BorderRadiuses {
+    const swiped = this.swipedProfile === id;
+    return {
+      topLeft: 18,
+      bottomLeft: 18,
+      topRight: swiped ? 0 : 18,
+      bottomRight: swiped ? 0 : 18
+    };
+  }
+
+  private profileCardBorderWidth(id: string): EdgeWidths {
+    return { left: 1, top: 1, bottom: 1, right: this.swipedProfile === id ? 0 : 1 };
+  }
+
+  private openProfileActions(id: string): void {
+    if (this.swipedProfile === id) {
+      return;
+    }
+    this.getUIContext().animateTo({ duration: 180, curve: Curve.EaseOut }, () => {
+      this.swipedProfile = id;
+    });
+  }
+
+  private closeProfileActions(): void {
+    if (this.swipedProfile.length === 0) {
+      return;
+    }
+    this.getUIContext().animateTo({ duration: 180, curve: Curve.EaseOut }, () => {
+      this.swipedProfile = '';
+    });
+  }
+
+  // 编辑：复用添加配置的表单，只是带上目标配置的现有值，保存时按 editingProfile 更新。
+  private beginEditConfiguration(item: VpnProfile): void {
+    this.closeProfileActions();
+    if (this.isTunnelConnected() || this.isConnectionBusy()) {
+      this.credentialAction = '请先断开连接再修改配置';
+      return;
+    }
+    this.editingProfile = item.id;
+    this.configurationNameInput = item.name;
+    this.privateManagementUrl = item.managementUrl;
+    this.setupKeyInput = '';
+    this.isAddingConfiguration = true;
+    this.credentialAction = '';
+  }
+
+  // 重置：清掉该配置的身份（config + 私钥、注册状态、待导入的一次性 key），
+  // 只保留名称和管理地址。之前只删注册状态时本地私钥仍在，扩展会直接恢复身份连上，
+  // 看起来像是"重置了却还登录着"。
+  private resetProfileIdentity(id: string): void {
+    this.closeProfileActions();
+    if (this.isTunnelConnected() || this.isConnectionBusy()) {
+      this.credentialAction = '请先断开连接再重置';
+      return;
+    }
     this.stopVpnProcess().then((): void => {
+      this.removeStoredFile(`netbird-private-${id}.json`);
       this.removeStoredFile(`netbird-state-${id}.json`);
       this.removeStoredFile(credentialImportFileName());
       this.removeStoredFile(legacyProfileCredentialFileName(id));
@@ -1377,11 +1739,14 @@ struct Index {
       this.vpnPrepared = false;
       this.extensionStarted = false;
       this.explicitConnectionState = 'unknown';
+      this.identityRejected = false;
+      this.platformError = '';
       this.resetPeerRuntime();
-      this.credentialAction = '登录凭据已清除，请粘贴新的 Setup Key';
-      hilog.info(DOMAIN, 'NetBirdPrivateAuth', 'CREDENTIALS_CLEARED');
+      this.credentialAction = '已重置该配置的登录状态，下次连接将重新认证';
+      this.vpnAction = '已重置登录状态';
+      hilog.info(DOMAIN, 'NetBirdPrivateAuth', 'IDENTITY_CLEARED');
     }).catch((error: Error): void => {
-      this.credentialAction = `清除凭据失败: ${error.message}`;
+      this.credentialAction = `重置失败: ${error.message}`;
     });
   }
 
@@ -1492,6 +1857,14 @@ struct Index {
               .fontSize(24)
               .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.nb_text_primary'))
+            Text('设置')
+              .fontSize(13)
+              .fontColor($r('app.color.nb_accent'))
+              .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+              .onClick(() => {
+                this.settingsMessage = '';
+                this.settingsActive = true;
+              })
             Blank()
             Stack({ alignContent: Alignment.Start }) {
               // Slightly taller than the title cap height for a balanced pill, with
@@ -1587,6 +1960,16 @@ struct Index {
               }
 
               Column({ space: 10 }) {
+                Row() {
+                  Text('当前配置').fontSize(13).fontColor($r('app.color.nb_text_tertiary')).width('38%')
+                  Text(this.configurationName)
+                    .fontSize(13)
+                    .fontColor($r('app.color.nb_text_primary'))
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .layoutWeight(1)
+                }.width('100%')
+                Divider().color($r('app.color.nb_inner_border')).strokeWidth(1)
                 Row() {
                   Text('隧道状态').fontSize(13).fontColor($r('app.color.nb_text_tertiary')).width('38%')
                   Text(this.isTunnelConnected() ? '✓  隧道已建立' : '正在建立…').fontSize(13).fontColor($r('app.color.nb_text_primary'))
@@ -1711,7 +2094,7 @@ struct Index {
                       .alignItems(VerticalAlign.Center)
                     }, (item: RouteDetailView) => `${item.prefix}|${item.via}`)
                     if (this.appliedRoutes.length === 0) {
-                      Text('暂无已下发路由')
+                      Text(this.clientRoutesDisabled ? '未接受服务端路由（设置已关闭）' : '暂无已下发路由')
                         .fontSize(12)
                         .fontColor($r('app.color.nb_text_hint'))
                         .width('100%')
@@ -1843,64 +2226,113 @@ struct Index {
                 .width('100%')
               } else {
                 ForEach(this.profiles, (item: VpnProfile) => {
-                  Column({ space: 10 }) {
-                    Row({ space: 12 }) {
-                      Text(item.id === this.activeProfile ? '✓' : '')
-                        .fontSize(13)
-                        .fontWeight(FontWeight.Bold)
-                        .fontColor($r('app.color.nb_on_accent'))
-                        .textAlign(TextAlign.Center)
-                        .width(26)
-                        .height(26)
-                        .borderRadius(13)
-                        .backgroundColor(item.id === this.activeProfile ? $r('app.color.nb_accent') :
-                          $r('app.color.nb_neutral_soft'))
-                        .border(item.id === this.activeProfile ? { width: 0 } :
-                          { width: 1, color: $r('app.color.nb_card_border') })
-                      Column({ space: 2 }) {
-                        Text(item.name)
-                          .fontSize(17)
-                          .fontWeight(FontWeight.Medium)
-                          .fontColor($r('app.color.nb_text_primary'))
-                        Text(item.managementUrl.length > 0 ? item.managementUrl :
-                          'Management 配置已安全保存')
-                          .fontSize(12)
-                          .fontColor($r('app.color.nb_text_secondary'))
-                          .maxLines(1)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  // 外层容器负责裁剪且自身不位移，内层整行左移才能把按钮带进可视区；
+                  // 高度交给卡片内容决定，按钮沿交叉轴拉伸对齐。
+                  Column() {
+                    Flex({ direction: FlexDirection.Row, alignItems: ItemAlign.Stretch }) {
+                    Column({ space: 10 }) {
+                      Row({ space: 12 }) {
+                        Text(item.id === this.activeProfile ? '✓' : '')
+                          .fontSize(13)
+                          .fontWeight(FontWeight.Bold)
+                          .fontColor($r('app.color.nb_on_accent'))
+                          .textAlign(TextAlign.Center)
+                          .width(26)
+                          .height(26)
+                          .borderRadius(13)
+                          .backgroundColor(item.id === this.activeProfile ? $r('app.color.nb_accent') :
+                            $r('app.color.nb_neutral_soft'))
+                          .border(item.id === this.activeProfile ? { width: 0 } :
+                            { width: 1, color: $r('app.color.nb_card_border') })
+                        Column({ space: 2 }) {
+                          Text(item.name)
+                            .fontSize(17)
+                            .fontWeight(FontWeight.Medium)
+                            .fontColor($r('app.color.nb_text_primary'))
+                          Text(item.managementUrl.length > 0 ? item.managementUrl :
+                            'Management 配置已安全保存')
+                            .fontSize(12)
+                            .fontColor($r('app.color.nb_text_secondary'))
+                            .maxLines(1)
+                            .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        }
+                        .layoutWeight(1)
+                        .alignItems(HorizontalAlign.Start)
                       }
-                      .layoutWeight(1)
-                      .alignItems(HorizontalAlign.Start)
-                      Text('×')
-                        .fontSize(26)
-                        .fontColor($r('app.color.nb_text_secondary'))
-                        .padding(4)
-                        .onClick(() => this.deleteConfiguration(item.id))
-                    }
-                    .width('100%')
-                    .alignItems(VerticalAlign.Center)
-                    .onClick(() => this.selectProfile(item.id))
+                      .width('100%')
+                      .alignItems(VerticalAlign.Center)
 
-                    if (item.id === this.activeProfile) {
-                      TextInput({ placeholder: 'Setup Key（可选）', text: this.setupKeyInput })
-                        .height(40)
-                        .fontSize(14)
-                        .type(InputType.Password)
-                        .backgroundColor($r('app.color.nb_input_background'))
-                        .borderRadius(20)
-                        .padding({ left: 14, right: 14 })
-                        .width('100%')
-                        .onChange((value: string) => this.setupKeyInput = value)
+                      if (item.id === this.activeProfile) {
+                        TextInput({ placeholder: 'Setup Key（可选）', text: this.setupKeyInput })
+                          .height(40)
+                          .fontSize(14)
+                          .type(InputType.Password)
+                          .backgroundColor($r('app.color.nb_input_background'))
+                          .borderRadius(20)
+                          .padding({ left: 14, right: 14 })
+                          .width('100%')
+                          .onChange((value: string) => this.setupKeyInput = value)
+                      }
                     }
+                    .padding(14)
+                    .border({
+                      width: this.profileCardBorderWidth(item.id),
+                      color: item.id === this.activeProfile ? $r('app.color.nb_accent') :
+                        $r('app.color.nb_card_border')
+                    })
+                    .borderRadius(this.profileCardRadius(item.id))
+                    .backgroundColor($r('app.color.nb_card_background'))
+                    .width('100%')
+                    .flexShrink(0)
+                    .onClick(() => {
+                      if (this.swipedProfile.length > 0) {
+                        this.closeProfileActions();
+                        return;
+                      }
+                      this.selectProfile(item.id);
+                    })
+
+                    Text('编辑')
+                      .fontSize(14)
+                      .fontColor($r('app.color.nb_on_accent'))
+                      .textAlign(TextAlign.Center)
+                      .width(PROFILE_ACTION_WIDTH)
+                      .flexShrink(0)
+                      .backgroundColor($r('app.color.nb_status_idle'))
+                      .onClick(() => this.beginEditConfiguration(item))
+                    Text('重置')
+                      .fontSize(14)
+                      .fontColor($r('app.color.nb_on_accent'))
+                      .textAlign(TextAlign.Center)
+                      .width(PROFILE_ACTION_WIDTH)
+                      .flexShrink(0)
+                      .backgroundColor($r('app.color.nb_status_progress'))
+                      .onClick(() => this.confirmResetProfile(item))
+                    Text('删除')
+                      .fontSize(14)
+                      .fontColor($r('app.color.nb_on_accent'))
+                      .textAlign(TextAlign.Center)
+                      .width(PROFILE_ACTION_WIDTH)
+                      .flexShrink(0)
+                      .borderRadius({ topRight: 18, bottomRight: 18 })
+                      .backgroundColor($r('app.color.nb_status_failed'))
+                      .onClick(() => this.confirmDeleteProfile(item))
                   }
-                  .padding(14)
-                  .border({
-                    width: 1,
-                    color: item.id === this.activeProfile ? $r('app.color.nb_accent') :
-                      $r('app.color.nb_card_border')
-                  })
-                  .borderRadius(18)
                   .width('100%')
+                  .translate({ x: this.swipedProfile === item.id ? -PROFILE_ACTION_WIDTH * 3 : 0 })
+                  .gesture(
+                    PanGesture({ direction: PanDirection.Horizontal, distance: 12 })
+                      .onActionEnd((event: GestureEvent) => {
+                        if (event.offsetX < -24) {
+                          this.openProfileActions(item.id);
+                        } else if (event.offsetX > 24) {
+                          this.closeProfileActions();
+                        }
+                      })
+                  )
+                  }
+                  .width('100%')
+                  .clip(true)
                 }, (item: VpnProfile) => `${item.id}|${item.name}|${item.id === this.activeProfile}`)
 
                 Button('+ 添加配置')
@@ -1952,21 +2384,237 @@ struct Index {
           .borderRadius(24)
           .width('100%')
           .onClick(() => this.handlePrimaryAction())
-        if (!this.showConnectionPanel()) {
-          Text('重置密钥')
-            .fontSize(14)
-            .fontColor($r('app.color.nb_text_secondary'))
-            .padding(6)
-            .onClick(() => this.resetCredentialInput())
-        }
       }
       // The bar itself is fully transparent so the page shows through; the button
       // floats above the content on its own gradient and glow.
       .padding({ left: 18, right: 18, top: 12, bottom: 20 })
       .backgroundColor(Color.Transparent)
       .width('100%')
+
+      // 交互式登录覆盖层：授权页在应用内打开，IdP 重定向到 Core 监听的本机回调即完成。
+      if (this.ssoActive) {
+        Column({ space: 12 }) {
+          Row({ space: 10 }) {
+            Text('登录以完成注册')
+              .fontSize(18)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.nb_text_primary'))
+            Blank()
+            Text('取消')
+              .fontSize(15)
+              .fontColor($r('app.color.nb_accent'))
+              .padding(6)
+              .onClick(() => this.cancelSSOLogin())
+          }
+          .width('100%')
+
+          Text(this.ssoMessage)
+            .fontSize(12)
+            .fontColor($r('app.color.nb_text_secondary'))
+            .width('100%')
+
+          if (this.ssoUserCode.length > 0) {
+            Text(this.ssoUserCode)
+              .fontSize(28)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.nb_accent'))
+              .textAlign(TextAlign.Center)
+              .width('100%')
+          }
+
+          Text('若浏览器没有自动打开，可点击下方地址重试')
+            .fontSize(11)
+            .fontColor($r('app.color.nb_text_tertiary'))
+            .width('100%')
+
+          Text(this.ssoAuthUrl)
+            .fontSize(11)
+            .fontColor($r('app.color.nb_accent'))
+            .maxLines(3)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .width('100%')
+            .onClick(() => this.openSSOAuthPage())
+
+          Blank()
+        }
+        .padding({ left: 16, right: 16, top: 16, bottom: 16 })
+        .width('100%')
+        .height('100%')
+        .backgroundColor($r('sys.color.background_primary'))
+      }
+      // 全局设置覆盖层：所有服务器配置共用一套；改动立即保存，连接相关项重连后生效。
+      if (this.settingsActive) {
+        Column({ space: 0 }) {
+          Row({ space: 10 }) {
+            Text('设置')
+              .fontSize(18)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.nb_text_primary'))
+            Blank()
+            Text('完成')
+              .fontSize(15)
+              .fontColor($r('app.color.nb_accent'))
+              .padding(6)
+              .onClick(() => this.settingsActive = false)
+          }
+          .width('100%')
+          .padding({ bottom: 6 })
+
+          if (this.settingsMessage.length > 0) {
+            Text(this.settingsMessage)
+              .fontSize(12)
+              .fontColor($r('app.color.nb_text_secondary'))
+              .width('100%')
+              .padding({ bottom: 6 })
+          }
+
+          Scroll() {
+            Column({ space: 14 }) {
+              this.SettingsGroup('连接行为')
+              this.SettingsToggle('打开应用即自动连接', '仅在该配置已登录时生效',
+                this.settings.host.autoConnectOnLaunch, (on: boolean) => {
+                  this.settings.host.autoConnectOnLaunch = on;
+                  this.persistSettings();
+                })
+              this.SettingsToggle('自动应用服务端变更', '管理端新增资源后自动重建隧道，关闭后改为提示重连',
+                this.settings.host.autoApplyServerChanges, (on: boolean) => {
+                  this.settings.host.autoApplyServerChanges = on;
+                  this.persistSettings();
+                })
+              this.SettingsToggle('登录优先使用设备码', '关闭后改用浏览器回调登录，少一步输码但依赖本机回调',
+                this.settings.host.preferDeviceCodeLogin, (on: boolean) => {
+                  this.settings.host.preferDeviceCodeLogin = on;
+                  this.persistSettings();
+                })
+
+              this.SettingsGroup('网络')
+              this.SettingsToggle('接管系统 DNS', '关闭后不修改系统 DNS，管理端下发的 DNS 将不生效',
+                this.settings.core.manageDns, (on: boolean) => {
+                  this.settings.core.manageDns = on;
+                  this.persistSettings();
+                })
+              this.SettingsToggle('接受服务端路由', '关闭后只做点对点连接，不接收网段与域名资源',
+                this.settings.core.acceptRoutes, (on: boolean) => {
+                  this.settings.core.acceptRoutes = on;
+                  this.persistSettings();
+                })
+              this.SettingsToggle('禁用 IPv6', '仅使用 IPv4 隧道',
+                this.settings.core.disableIpv6, (on: boolean) => {
+                  this.settings.core.disableIpv6 = on;
+                  this.persistSettings();
+                })
+              this.SettingsInput('自定义上游 DNS', '留空表示使用管理端下发的上游',
+                this.settings.core.customDnsAddress, (value: string) => {
+                  this.settings.core.customDnsAddress = value.trim();
+                  this.persistSettings();
+                })
+              this.SettingsInput('MTU', '留空为默认 1280，可填 1280-1500',
+                this.settings.core.mtu > 0 ? `${this.settings.core.mtu}` : '', (value: string) => {
+                  this.applyNumericSetting(value, (parsed: number) => this.settings.core.mtu = parsed);
+                })
+              this.SettingsInput('WireGuard 端口', '留空为默认，可填 1024-65535',
+                this.settings.core.wireguardPort > 0 ? `${this.settings.core.wireguardPort}` : '',
+                (value: string) => {
+                  this.applyNumericSetting(value, (parsed: number) => this.settings.core.wireguardPort = parsed);
+                })
+              this.SettingsGroup('安全')
+              this.SettingsToggle('阻止访问本机局域网', '开启后隧道不再放通对本地网段的访问',
+                this.settings.core.blockLanAccess, (on: boolean) => {
+                  this.settings.core.blockLanAccess = on;
+                  this.persistSettings();
+                })
+              this.SettingsToggle('阻止入站连接', '只允许本机主动发起的连接',
+                this.settings.core.blockInbound, (on: boolean) => {
+                  this.settings.core.blockInbound = on;
+                  this.persistSettings();
+                })
+              this.SettingsToggle('后量子加密握手', '启用 Rosenpass，需要对端同样支持',
+                this.settings.core.rosenpassEnabled, (on: boolean) => {
+                  this.settings.core.rosenpassEnabled = on;
+                  this.persistSettings();
+                })
+              this.SettingsToggle('后量子加密宽松模式', '允许与不支持 Rosenpass 的对端继续连接',
+                this.settings.core.rosenpassPermissive, (on: boolean) => {
+                  this.settings.core.rosenpassPermissive = on;
+                  this.persistSettings();
+                })
+
+              Text('网络与安全类设置在下次连接时生效。')
+                .fontSize(11)
+                .fontColor($r('app.color.nb_text_tertiary'))
+                .width('100%')
+                .padding({ top: 4, bottom: 24 })
+            }
+            .width('100%')
+          }
+          .layoutWeight(1)
+          .scrollBar(BarState.Off)
+          .width('100%')
+        }
+        .padding({ left: 16, right: 16, top: 16 })
+        .width('100%')
+        .height('100%')
+        .backgroundColor($r('sys.color.background_primary'))
+      }
     }
     .height('100%')
     .backgroundColor($r('sys.color.background_primary'))
+  }
+
+  @Builder
+  SettingsGroup(title: string) {
+    Text(title)
+      .fontSize(13)
+      .fontWeight(FontWeight.Bold)
+      .fontColor($r('app.color.nb_text_secondary'))
+      .width('100%')
+      .padding({ top: 6 })
+  }
+
+  @Builder
+  SettingsToggle(title: string, hint: string, value: boolean, onChanged: (on: boolean) => void) {
+    Row({ space: 12 }) {
+      Column({ space: 2 }) {
+        Text(title)
+          .fontSize(15)
+          .fontColor($r('app.color.nb_text_primary'))
+        Text(hint)
+          .fontSize(11)
+          .fontColor($r('app.color.nb_text_tertiary'))
+      }
+      .layoutWeight(1)
+      .alignItems(HorizontalAlign.Start)
+      Toggle({ type: ToggleType.Switch, isOn: value })
+        .onChange((on: boolean) => onChanged(on))
+    }
+    .width('100%')
+    .alignItems(VerticalAlign.Center)
+  }
+
+  @Builder
+  SettingsInput(title: string, hint: string, value: string, onCommit: (text: string) => void) {
+    Column({ space: 6 }) {
+      Text(title)
+        .fontSize(15)
+        .fontColor($r('app.color.nb_text_primary'))
+        .width('100%')
+      Text(hint)
+        .fontSize(11)
+        .fontColor($r('app.color.nb_text_tertiary'))
+        .width('100%')
+      TextInput({ text: value })
+        .height(40)
+        .fontSize(14)
+        .backgroundColor($r('app.color.nb_input_background'))
+        .borderRadius(20)
+        .padding({ left: 14, right: 14 })
+        .width('100%')
+        .onSubmit(() => {
+        })
+        .onBlur(() => {
+        })
+        .onChange((text: string) => onCommit(text))
+    }
+    .width('100%')
   }
 }

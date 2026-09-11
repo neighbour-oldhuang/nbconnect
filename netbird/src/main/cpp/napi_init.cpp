@@ -1,4 +1,4 @@
-#include "napi/native_api.h"
+﻿#include "napi/native_api.h"
 #include "libnbharmony.h"
 
 #include <cstdint>
@@ -95,6 +95,42 @@ static napi_value CoreStorePrivateCredentialImport(napi_env env, napi_callback_i
         const_cast<char *>(setupKey.c_str()),
         const_cast<char *>(managementUrl.c_str()),
         const_cast<char *>(managementDialAddress.c_str())));
+}
+
+static napi_value CoreSetClientSettings(napi_env env, napi_callback_info info)
+{
+    size_t argc = 1;
+    napi_value argv[1] = { nullptr };
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    const std::string settings = argc > 0 ? ReadUtf8(env, argv[0]) : "";
+    return ToArkString(env, NbCoreSetClientSettings(const_cast<char *>(settings.c_str())));
+}
+
+static napi_value CoreStartSSOLogin(napi_env env, napi_callback_info info)
+{
+    size_t argc = 5;
+    napi_value argv[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    const std::string deviceName = argc > 0 ? ReadUtf8(env, argv[0]) : "";
+    const std::string osVersion = argc > 1 ? ReadUtf8(env, argv[1]) : "";
+    const std::string configPath = argc > 2 ? ReadUtf8(env, argv[2]) : "";
+    const std::string managementUrl = argc > 3 ? ReadUtf8(env, argv[3]) : "";
+    bool preferDeviceCode = false;
+    if (argc > 4) {
+        napi_get_value_bool(env, argv[4], &preferDeviceCode);
+    }
+    return ToArkString(env, NbCoreStartSSOLogin(
+        const_cast<char *>(deviceName.c_str()),
+        const_cast<char *>(osVersion.c_str()),
+        const_cast<char *>(configPath.c_str()),
+        const_cast<char *>(managementUrl.c_str()),
+        preferDeviceCode ? 1 : 0));
+}
+
+static napi_value CoreCancelSSOLogin(napi_env env, napi_callback_info info)
+{
+    (void)info;
+    return ToArkString(env, NbCoreCancelSSOLogin());
 }
 
 static napi_value CoreStartPrivateAuthentication(napi_env env, napi_callback_info info)
@@ -294,6 +330,9 @@ static napi_value Init(napi_env env, napi_value exports)
         { "coreInit", nullptr, CoreInit, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "coreStorePrivateCredentialImport", nullptr, CoreStorePrivateCredentialImport, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "coreStartPrivateAuthentication", nullptr, CoreStartPrivateAuthentication, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "coreSetClientSettings", nullptr, CoreSetClientSettings, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "coreStartSSOLogin", nullptr, CoreStartSSOLogin, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "coreCancelSSOLogin", nullptr, CoreCancelSSOLogin, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "coreSetConfig", nullptr, CoreSetConfig, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "coreSetPlatformState", nullptr, CoreSetPlatformState, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "coreClearPlatformState", nullptr, CoreClearPlatformState, nullptr, nullptr, nullptr, napi_default, nullptr },
