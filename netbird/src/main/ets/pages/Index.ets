@@ -1338,7 +1338,7 @@ struct Index {
   private startShimmer(): void {
     this.shimmerOffset = -46;
     setTimeout((): void => {
-      animateTo({
+      this.getUIContext().animateTo({
         duration: 2800,
         curve: Curve.Linear,
         delay: 400,
