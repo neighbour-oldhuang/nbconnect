@@ -1,7 +1,7 @@
 {
   "name": "netbird",
-  "version": "1.0.0",
-  "description": "Please describe the basic information.",
+  "version": "0.78.1",
+  "description": "NBConnect VPN 模块（NetBird HarmonyOS 宿主）",
   "main": "",
   "author": "",
   "license": "",
