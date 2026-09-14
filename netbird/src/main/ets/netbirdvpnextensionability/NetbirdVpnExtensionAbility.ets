@@ -3,6 +3,7 @@ import { BusinessError, commonEventManager } from '@kit.BasicServicesKit';
 import { VpnExtensionAbility, vpnExtension } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import netbird from 'libnetbird.so';
+import { deviceDisplayName } from '../vpn/DeviceIdentity';
 import {
   HarmonyPlatformAdapter,
   HarmonyPlatformSummary,
@@ -381,7 +382,7 @@ export default class NetbirdVpnExtensionAbility extends VpnExtensionAbility {
     const credentialPath = credentialImportPath(filesDir);
     hilog.info(DOMAIN, TAG, 'VPN_ACTIVE_PROFILE_SELECTED');
     const started = JSON.parse(netbird.coreStartPrivateAuthentication(
-      'nbconnect-vpn', 'HarmonyOS', configPath, credentialPath)) as PrivateCoreEnvelope;
+      deviceDisplayName(this.context), 'HarmonyOS', configPath, credentialPath)) as PrivateCoreEnvelope;
     if (!started.ok) {
       throw new Error(started.message ?? 'private NetBird authentication could not start');
     }
@@ -946,7 +947,7 @@ export default class NetbirdVpnExtensionAbility extends VpnExtensionAbility {
       }
     } catch (_) {
     }
-    netbird.coreInit('nbconnect-vpn', 'HarmonyOS', '{}');
+    netbird.coreInit(deviceDisplayName(this.context), 'HarmonyOS', '{}');
     hilog.info(DOMAIN, TAG, 'VPN_CORE_INIT_OK');
   }
 }

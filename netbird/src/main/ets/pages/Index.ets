@@ -5,6 +5,7 @@ import { BusinessError, commonEventManager } from '@kit.BasicServicesKit';
 import { http, socket, vpnExtension } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import netbird from 'libnetbird.so';
+import { deviceDisplayName } from '../vpn/DeviceIdentity';
 import {
   activeProfileId,
   createProfileId,
@@ -743,7 +744,7 @@ struct Index {
     try {
       // 登录方式由全局设置决定：设备码把交互整个交给浏览器（企业 SSO 常要跳到另一个应用
       // 再跳回来），PKCE 少一步输码但依赖浏览器能回调到本机监听端口。
-      const raw = netbird.coreStartSSOLogin('nbconnect-vpn', 'HarmonyOS',
+      const raw = netbird.coreStartSSOLogin(deviceDisplayName(this.hostContext()), 'HarmonyOS',
         this.buildSSOConfigPath(), management, this.settings.host.preferDeviceCodeLogin);
       const envelope = JSON.parse(raw) as SSOEnvelope;
       if (!envelope.ok || envelope.data === undefined ||
@@ -914,9 +915,10 @@ struct Index {
 
   private initializeLocalCore(): void {
     try {
-      const report = netbird.coreInit('nbconnect-ui-regression', 'HarmonyOS', '{}');
+      const deviceName = deviceDisplayName(this.hostContext());
+      const report = netbird.coreInit(deviceName, 'HarmonyOS', '{}');
       this.applyLocalCoreReport(report);
-      hilog.info(DOMAIN, 'NetBirdCore', 'CORE_INIT_OK');
+      hilog.info(DOMAIN, 'NetBirdCore', 'CORE_INIT_OK device=%{public}s', deviceName);
     } catch (error) {
       const err = error as Error;
       this.headline = `初始化失败: ${err.message}`;
@@ -1539,9 +1541,12 @@ struct Index {
     await this.prepareVpnProcess();
   }
 
+  private hostContext(): common.UIAbilityContext {
+    return this.getUIContext().getHostContext() as common.UIAbilityContext;
+  }
+
   private filesDir(): string {
-    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
-    return context.getApplicationContext().filesDir;
+    return this.hostContext().getApplicationContext().filesDir;
   }
 
   // Loads the profile list and migrates a pre-existing single configuration so an
