@@ -77,10 +77,22 @@ REM 由 tools\build.ps1 生成：把 ar 指向 NDK 的 llvm-ar。
     $env:GOARCH = 'arm64'
     $env:CC = $ccWrapper
     $env:PATH = "$binDir;$env:PATH"
+
+    # 管理端 peer 列表里的版本号取自 version.NetbirdVersion()，不注入就是 "development"
+    # （面板显示 dev）。用 app.json5 的 versionName 作为唯一来源，保证两边一致。
+    $appJson = Join-Path $projectDir 'AppScope\app.json5'
+    Assert-Path $appJson 'AppScope/app.json5'
+    $versionMatch = [regex]::Match((Get-Content $appJson -Raw), '"versionName"\s*:\s*"([^"]+)"')
+    if (-not $versionMatch.Success) { throw "无法从 $appJson 解析 versionName" }
+    $appVersion = $versionMatch.Groups[1].Value
+    Write-Host ("      注入 NetBird 版本号 $appVersion") -ForegroundColor DarkGray
+
     Push-Location $netbirdDir
     try {
         # -tags harmony 是必需的：平台实现按该 build tag 分派。
-        & go build -tags harmony -buildmode=c-archive -o (Join-Path $cppDir 'libnbharmony.a') .\client\harmony\
+        & go build -tags harmony -buildmode=c-archive `
+            -ldflags "-X github.com/netbirdio/netbird/version.version=$appVersion" `
+            -o (Join-Path $cppDir 'libnbharmony.a') .\client\harmony\
         if ($LASTEXITCODE -ne 0) { throw "go build 失败（退出码 $LASTEXITCODE）" }
     } finally {
         Pop-Location
