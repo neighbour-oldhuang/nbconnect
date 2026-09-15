@@ -1,4 +1,5 @@
 import { fileIo } from '@kit.CoreFileKit';
+import { buffer } from '@kit.ArkTS';
 
 // Multiple server configurations are supported. Each profile owns its own Core
 // files so switching the active profile never mixes peer identities:
@@ -49,9 +50,12 @@ export function readProfileIndex(filesDir: string): VpnProfileIndex {
       if (size <= 0 || size > 262144) {
         return empty;
       }
-      const buffer = new ArrayBuffer(size);
-      const read = fileIo.readSync(file.fd, buffer);
-      const text = String.fromCharCode(...new Uint8Array(buffer.slice(0, read)));
+      const raw = new ArrayBuffer(size);
+      const read = fileIo.readSync(file.fd, raw);
+      // 写入走 fileIo.writeSync(fd, string)，默认按 UTF-8 编码，这里必须按 UTF-8 解回来。
+      // 原先用 String.fromCharCode 是把每个字节当一个 UTF-16 码元（等于 Latin-1 解码），
+      // 中文配置名一个字 3 字节会变成 3 个乱码字符。
+      const text = buffer.from(raw, 0, read).toString('utf-8');
       const parsed = JSON.parse(text) as VpnProfileIndex;
       const profiles = parsed.profiles ?? [];
       return { activeId: parsed.activeId ?? '', profiles: profiles };

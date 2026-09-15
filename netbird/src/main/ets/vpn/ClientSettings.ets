@@ -1,4 +1,5 @@
 ﻿import { fileIo } from '@kit.CoreFileKit';
+import { buffer } from '@kit.ArkTS';
 
 // 客户端设置是全局的：手机上多份服务器配置通常是同一套使用习惯。
 // 文件由 UI 进程写、UI 与 VPN 扩展两个进程都读，扩展在准备前把它交给 Core，
@@ -70,9 +71,10 @@ export function readClientSettings(filesDir: string): ClientSettings {
       if (size <= 0 || size > 65536) {
         return defaults;
       }
-      const buffer = new ArrayBuffer(size);
-      const read = fileIo.readSync(file.fd, buffer);
-      const text = String.fromCharCode(...new Uint8Array(buffer.slice(0, read)));
+      const raw = new ArrayBuffer(size);
+      const read = fileIo.readSync(file.fd, raw);
+      // 同 ProfileStore：写入是 UTF-8，必须按 UTF-8 解回来，否则中文会乱码。
+      const text = buffer.from(raw, 0, read).toString('utf-8');
       const parsed = JSON.parse(text) as ClientSettings;
       return mergeClientSettings(defaults, parsed);
     } finally {
