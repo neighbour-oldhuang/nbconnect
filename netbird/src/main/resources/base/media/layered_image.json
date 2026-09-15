@@ -1,6 +1,6 @@
 {
   "layered-image": {
-    "background": "$media:nbconnect",
-    "foreground": "$media:nbconnect"
+    "background": "$media:background",
+    "foreground": "$media:foreground"
   }
 }
