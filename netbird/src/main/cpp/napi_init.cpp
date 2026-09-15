@@ -5,6 +5,23 @@
 #include <string>
 #include <vector>
 
+// Go 的 c-archive 入口 _rt0_arm64_lib 从寄存器 R0/R1 取 argc/argv，指望调用方按
+// (argc, argv, envp) 的约定调用 .init_array。OHOS musl 走 dlopen 加载本库时不传这三个
+// 参数，R0/R1 是寄存器残值：HarmonyOS 7.0 上侥幸能让遍历撞到 NULL，6.1 上会把环境变量
+// 字符串当指针解引用，在 runtime.getGodebugEarly 里 SIGSEGV（审核机 Mate 80 Pro
+// 6.1.0.125 / Mate X5 6.1.0.135 实测必崩）。
+//
+// patch_rt0.js 会把 _rt0_arm64_lib 里保存 argc/argv 的两条指令改成
+// argc=0、argv=&kGoZeroArgv，于是 sysargs / getGodebugEarly / goenvs_unix 的遍历
+// 第一步就撞到 NULL。auxv 随之为空，Go 会按既有回退路径去读 /proc/self/auxv 拿
+// 页大小和 HWCAP，不影响 runtime 初始化。
+//
+// 必须 4096 对齐：patch 用单条 ADRP 装载地址，没有配套的 ADD 来补低 12 位。
+// 全零且只读不写，放在 .bss 由加载器清零即可。
+extern "C" {
+alignas(4096) char kGoZeroArgv[64] __attribute__((used)) = {};
+}
+
 static std::string ReadUtf8(napi_env env, napi_value value)
 {
     napi_valuetype type = napi_undefined;

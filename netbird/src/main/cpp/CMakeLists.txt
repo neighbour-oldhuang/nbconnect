@@ -45,3 +45,18 @@ add_custom_command(TARGET netbird POST_BUILD
     COMMENT "Patching Go runtime R_AARCH64_TLS_TPREL64 relocation"
     VERBATIM
 )
+
+# Go 的 c-archive 构造函数从 R0/R1 取 argc/argv，而 OHOS musl 经 dlopen 调 .init_array
+# 时不传这两个参数。HarmonyOS 6.1 上 runtime.getGodebugEarly 会把环境变量字符串当指针
+# 解引用直接 SIGSEGV（7.0 只是侥幸没崩）。改两条指令让 runtime 用 kGoZeroArgv 这个全零
+# argv，彻底不碰进程 argv/envp。同样要在 DoNativeStrip 之前做（依赖 .symtab）。
+set(RT0_PATCH_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../../../patch_rt0.js")
+if(NOT EXISTS "${RT0_PATCH_SCRIPT}")
+    message(FATAL_ERROR "rt0 patch script not found: ${RT0_PATCH_SCRIPT}")
+endif()
+
+add_custom_command(TARGET netbird POST_BUILD
+    COMMAND "${NODE_EXECUTABLE}" "${RT0_PATCH_SCRIPT}" "$<TARGET_FILE:netbird>"
+    COMMENT "Patching Go runtime argc/argv capture (_rt0_arm64_lib)"
+    VERBATIM
+)
