@@ -9,6 +9,12 @@
 #   .\tools\build.ps1 -Install        # 再装到已连接的设备
 #   .\tools\build.ps1 -SkipGo         # 只重打 HAP（改了 ArkTS/C++ 时用，快）
 #   .\tools\build.ps1 -SkipHap        # 只出 .a（改了 Go 时先验证编译）
+#   .\tools\build.ps1 -App            # 打 AGC 上传包 .app，并先自增 versionCode
+#   .\tools\build.ps1 -App -NoBump    # 打上传包但不动 versionCode（重打同一版时用）
+#
+# 日常开发把 build-profile.json5 的 signingConfig 留在 dev 即可（IDE Run 需要它）；
+# -App 会临时换成发布证书（默认名 "default"，可用 -ReleaseSigningConfig 覆盖）
+# 并在构建结束后还原。
 #
 # 路径可用环境变量覆盖：NBCONNECT_NETBIRD_DIR、NBCONNECT_DEVECO_DIR
 
@@ -16,7 +22,10 @@
 param(
     [switch]$SkipGo,
     [switch]$SkipHap,
-    [switch]$Install
+    [switch]$Install,
+    [switch]$App,
+    [switch]$NoBump,
+    [string]$ReleaseSigningConfig = 'default'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,16 +121,65 @@ if ($SkipHap) {
 Assert-Path $hvigor 'hvigorw'
 Assert-Path $jbr 'DevEco JBR'
 
-Write-Host '[2/3] 构建并签名 HAP...' -ForegroundColor Cyan
+# versionCode 必须在调 hvigor 之前改：hvigor 在插件生效前就把 app.json5 读进内存模型，
+# 构建过程中再改只会在下一次构建生效（实测产物 pack.info 仍是旧号），所以放在这里。
+# AGC 不接受与已上传包相同的 versionCode，忘记抬号会在上传那一步才失败。
+if ($App -and -not $NoBump) {
+    $appJson = Join-Path $projectDir 'AppScope\app.json5'
+    $rawApp = Get-Content $appJson -Raw
+    $codeMatch = [regex]::Match($rawApp, '("versionCode"\s*:\s*)(\d+)')
+    if (-not $codeMatch.Success) { throw "无法从 $appJson 解析 versionCode" }
+    $currentCode = [int]$codeMatch.Groups[2].Value
+    $nextCode = $currentCode + 1
+    if ($nextCode -ge 2147483647) { throw "versionCode 越界: $nextCode" }
+    ($rawApp -replace [regex]::Escape($codeMatch.Value), ($codeMatch.Groups[1].Value + $nextCode)) |
+        Set-Content $appJson -NoNewline
+    Write-Host ("      versionCode $currentCode -> $nextCode") -ForegroundColor DarkGray
+}
+
+$target = if ($App) { 'assembleApp' } else { 'assembleHap' }
+Write-Host ("[2/3] 构建并签名 {0}..." -f $(if ($App) { 'AGC 上传包 (.app)' } else { 'HAP' })) -ForegroundColor Cyan
 $env:DEVECO_SDK_HOME = $sdkDir
 $env:JAVA_HOME = $jbr
 $env:PATH = "$jbr\bin;$devecoDir\tools\node;$env:PATH"
+
+# 日常开发要用 dev 证书（release profile 签名的包 hdc 装不上，IDE Run 会报 9568322
+# "not trusted app source"），而上传 AGC 必须用发布证书。这里在打上传包时临时换过去，
+# 构建完（含失败/中断）都还原，免得下次 Run 又被拒。
+$buildProfile = Join-Path $projectDir 'build-profile.json5'
+$signingBackup = $null
+if ($App) {
+    $rawProfile = Get-Content $buildProfile -Raw
+    $signMatch = [regex]::Match($rawProfile, '("signingConfig"\s*:\s*")([^"]+)(")')
+    if (-not $signMatch.Success) { throw "无法从 $buildProfile 解析 signingConfig" }
+    if ($signMatch.Groups[2].Value -ne $ReleaseSigningConfig) {
+        $signingBackup = $rawProfile
+        $replacement = $signMatch.Groups[1].Value + $ReleaseSigningConfig + '"'
+        ($rawProfile -replace [regex]::Escape($signMatch.Value), $replacement) |
+            Set-Content $buildProfile -NoNewline
+        Write-Host ("      signingConfig {0} -> {1}（构建后自动还原）" -f `
+            $signMatch.Groups[2].Value, $ReleaseSigningConfig) -ForegroundColor DarkGray
+    }
+}
+
 Push-Location $projectDir
 try {
-    & $hvigor --no-daemon assembleHap
-    if ($LASTEXITCODE -ne 0) { throw "assembleHap 失败（退出码 $LASTEXITCODE）" }
+    & $hvigor --no-daemon $target
+    if ($LASTEXITCODE -ne 0) { throw "$target 失败（退出码 $LASTEXITCODE）" }
 } finally {
     Pop-Location
+    if ($signingBackup) {
+        Set-Content $buildProfile $signingBackup -NoNewline
+        Write-Host '      signingConfig 已还原' -ForegroundColor DarkGray
+    }
+}
+
+if ($App) {
+    $bundle = Join-Path $projectDir 'build\outputs\default\nbconnect-default-signed.app'
+    Assert-Path $bundle '签名后的 .app'
+    Write-Host ("      {0}" -f $bundle) -ForegroundColor DarkGray
+    Write-Host '[3/3] .app 用于上传 AGC，release profile 签名的包 hdc 装不上，跳过装机' -ForegroundColor DarkGray
+    return
 }
 
 $hap = Join-Path $projectDir 'netbird\build\default\outputs\default\netbird-default-signed.hap'
